@@ -1,0 +1,545 @@
+/*
+ * Tab "Jadwal" — gantt BACA-SAJA atas WBS proyek (Fase 1 / P1-H).
+ *
+ * Gambarnya digambar `charts.js ganttChart()` yang sudah ada sejak P1-A; berkas
+ * ini hanya menyusun BARISNYA. Yang membuatnya tidak sepele adalah dari mana
+ * setiap medan baris itu datang.
+ *
+ * ────────────────────────────────────────────────────────────────────────────
+ * BASELINE DICOCOKKAN LEWAT `wbs_code`, BUKAN LEWAT `wbs_task_id`
+ *
+ * ROADMAP menyebutnya "bukan id — kolomnya nullable". Kolomnya memang nullable
+ * dan memang tanpa FK, dan migrasinya menulis alasannya: baris beku harus
+ * bertahan meski tugas hidupnya dihapus. Tetapi keadaannya lebih keras daripada
+ * itu — DIUKUR pada berkas demo yang dikirim repositori ini: **0 dari 11**
+ * `wbs_task_id` beku menunjuk baris `prj_wbs_tasks` yang masih ada (id beku
+ * 12–22, id hidup 34–44), sementara **11 dari 11** `wbs_code`-nya cocok.
+ * Sebabnya `ProjectService::generateWbsFromBoq`, yang MENGHAPUS seluruh WBS
+ * lalu membuatnya ulang dengan id baru setiap kali "Buat WBS dari BOQ" ditekan.
+ *
+ * Jadi mencocokkan lewat id di sini bukan "kurang aman" — ia menghasilkan
+ * gantt tanpa satu pun bar baseline pada data yang ada. Kode di bawah
+ * mencocokkan lewat `wbs_code` saja, dan menyebutkan jumlah yang tidak cocok
+ * alih-alih menampilkannya sebagai "tidak ada baseline".
+ *
+ * (Catatan untuk pembaca berikutnya: `EvmService::physicalProgress` mencoba id
+ * DULU lalu jatuh ke kode. Keduanya memberi hasil yang sama pada data hari ini
+ * justru karena setiap id meleset. Perbedaan itu disengaja dan ditulis di
+ * docs/CONVENTIONS.md §20 dan docs/LAPORAN-PAKET-HM-P1-H.md §3; sejak P1-H,
+ * ketidaksepakatan antara id dan kode TIDAK LAGI DIAM — laporan EVM memuat
+ * peringatan yang menyebut kedua kodenya.)
+ *
+ * Angka 0-dari-11 di atas bukan hafalan: `JadwalGanttTest` mengukurnya ulang
+ * terhadap `ProjectService::generateWbsFromBoq` yang sungguhan, dan harness
+ * S26_gantt mengukur gambarnya di peramban (23 rect berdiri di x dan lebar yang
+ * dihitung ulang dari tanggal muatan API-nya, 0 meleset > 0,05 px).
+ * ────────────────────────────────────────────────────────────────────────────
+ *
+ * PROGRES DATANG DARI SISI HIDUP, dan hanya dari sana. Muatan baseline punya
+ * `live_progress_pct`, tetapi ia `whenLoaded` atas relasi yang — karena
+ * paragraf di atas — selalu null: Laravel memulangkan `null` tanpa pernah
+ * memanggil closure-nya, jadi medan itu null untuk SETIAP baris pada data demo.
+ * Maka dua endpoint diambil dan digabung di sini.
+ *
+ * SATUAN. `progress_pct` di kawat adalah 0..100 dan sebuah STRING ('60.0000');
+ * `ganttChart` menerima 0..1 dan dengan sengaja TIDAK menormalkan nilai di luar
+ * rentang — ia menjepit barnya lalu menulis "(di luar 0–100 %)" di <title>.
+ * Membaginya 100 karena itu bukan kosmetik: tanpa itu setiap bar terbaca 100 %.
+ */
+
+import { api, session } from '../api.js';
+import { el, clear, button, errorState, skeletonTable } from '../ui.js';
+import { ganttChart } from '../charts.js';
+
+const ZOOMS = [
+  { key: 'week', label: 'Mingguan' },
+  { key: 'month', label: 'Bulanan' },
+];
+
+/* Zoom bertahan antar kunjungan dalam satu sesi, seperti tab layar lain. */
+const state = { zoom: 'week' };
+
+/**
+ * @param {HTMLElement} host
+ * @param {{ id: number|string, project: object }} ctx
+ */
+export async function renderJadwal(host, { id, project }) {
+  clear(host);
+  host.appendChild(skeletonTable(6, 4));
+
+  let tasks;
+  let baseline;
+  let cycles;
+  /* "Hari ini" MENURUT SERVER (meta.as_of), tidak pernah menurut jam peramban —
+     aturan yang sudah tertulis di EvmService ("an EVM report keyed off a skewed
+     PC clock manufactures schedule variance out of nothing") dan dipakai
+     evm.js, varian.js dan sertifikat.js. Garis "Hari ini" di gantt adalah
+     pembacaan keterlambatan yang sama, hanya dengan mata: tanpa medan ini
+     charts.js jatuh ke localToday() dan garisnya berpindah mengikuti timezone
+     pembacanya (diukur 7 Sep 2026: Asia/Jakarta x=484,67, America/Los_Angeles
+     x=483,27, pada berkas dan jam server yang sama). */
+  let today;
+  /* Kegagalan baseline BUKAN ketiadaan baseline. `.catch(() => null)` dulu
+     menyamakan keduanya, dan layar mengumumkan "belum ada baseline beku" untuk
+     proyek yang baru saja ia baca punya baseline disetujui — fakta yang
+     dikarang tentang rencana beku, di layar yang justru ada untuk membandingkan
+     rencana dengan kenyataan, dan PANDUAN §7.2 mengajarkan kalimat itu berarti
+     "bukan galat". Ketiga keadaannya kini dibedakan (tidak ada / gagal dimuat /
+     tidak boleh dibaca), dan yang gagal membawa tombol coba lagi. */
+  let fault = null;
+
+  try {
+    /* DUA endpoint yang SUDAH ADA — P1-H tidak menambah satu pun. Baseline yang
+       memang belum ada bukan galat: proyek yang belum dibekukan tetap punya
+       jadwal, dan yang hilang hanyalah bar pembandingnya.
+
+       `api.list` (amplop utuh), bukan `api.get`: endpoint pohon mengirim
+       `meta.parent_cycles` ketika sebuah siklus parent_id memaksanya mengangkat
+       baris menjadi akar. Barisnya sampai; tempatnya di pohon TIDAK, dan kaki
+       kartu mengatakannya alih-alih menggambar jadwal yang tersusun ulang
+       diam-diam. */
+    const [live, current] = await Promise.all([
+      api.list(`projects/${id}/wbs-tasks`),
+      api.get('projects/baselines', { project_id: id, current: 1, per_page: 1 })
+        .catch((error) => { fault = { stage: 'list', status: error.status || 0 }; return null; }),
+    ]);
+
+    tasks = (live && live.data) || [];
+    cycles = (live && live.meta && live.meta.parent_cycles) || [];
+    today = (live && live.meta && live.meta.as_of) || null;
+    const head = Array.isArray(current) ? current[0] : null;
+
+    if (head) {
+      baseline = await api.get(`projects/baselines/${head.id}`)
+        .catch((error) => {
+          fault = { stage: 'show', status: error.status || 0, code: head.code || null };
+
+          return null;
+        });
+    }
+  } catch (error) {
+    return clear(host).appendChild(errorState(error, () => renderJadwal(host, { id, project })));
+  }
+
+  clear(host);
+  paint(host, { id, project, tasks, baseline, cycles, fault, today });
+}
+
+function paint(host, ctx) {
+  const { id, project, tasks, baseline, cycles, fault, today } = ctx;
+  const flat = flatten(tasks);
+
+  if (!flat.length) {
+    host.appendChild(el('.card', el('.card-body', el('p.muted', {
+      /* Kedua tombol yang disebut ada di KEPALA HALAMAN (project.js), terlihat
+         dari kedua tab — menyuruh pembacanya pindah tab ("pada tab Ringkasan")
+         untuk mencari tombol yang sudah ada di layarnya adalah perjalanan
+         sia-sia. Dan tombolnya hanya digambar untuk pemegang prj.update pada
+         proyek yang belum ditutup, jadi kalimat ini menyebutnya hanya kepada
+         orang yang benar-benar melihatnya. */
+      text: session.can('prj.update')
+        ? 'Proyek ini belum punya WBS. Pakai tombol "Buat WBS dari BOQ" di kepala halaman, atau '
+          + '"Impor Jadwal (MPP-XML)" di sebelahnya — gantt menggambar tugas WBS, bukan laporan mingguan.'
+        : 'Proyek ini belum punya WBS, jadi belum ada jadwal yang bisa digambar. WBS dibuat dari BOQ '
+          + '(atau diimpor dari berkas MPP-XML) oleh pemegang izin ubah proyek.',
+      style: { margin: 0 },
+    }))));
+    return;
+  }
+
+  const { index, duplicates } = indexBaseline(baseline);
+  /* Tabrakan kode di sisi HIDUP dihitung juga, dan sampai verifikasi P1-H tidak:
+     satu tugas hidup kedua berkode B.3 (bisa dibuat lewat POST wbs-tasks —
+     validasinya hanya required|string|max:20) membuat DUA baris memakai baris
+     beku yang sama, jadi 12 batang baseline tergambar untuk baseline berisi 11
+     baris dan kaki kartu mengumumkan "12 dari 12 tugas cocok". Diukur di
+     peramban 7 Sep 2026: dua <title> baseline yang identik, tanpa satu kalimat
+     peringatan pun. */
+  const liveDuplicates = duplicateCodes(flat.map((task) => task.wbs_code));
+  const rows = flat.map((task) => {
+    const frozen = index.get(task.wbs_code) || null;
+
+    return {
+      label: `${task.wbs_code} ${task.name}`,
+      start: task.planned_start,
+      end: task.planned_end,
+      // 0..100 di kawat (dan sebuah string) → 0..1 di sini.
+      progress: toFraction(task.progress_pct),
+      baselineStart: frozen ? frozen.planned_start : null,
+      baselineEnd: frozen ? frozen.planned_end : null,
+      level: task.level,
+    };
+  });
+
+  const matched = rows.filter((row) => row.baselineStart || row.baselineEnd).length;
+
+  const note = sourceNote(baseline, fault, matched, rows.length);
+  /* KOLOM LABEL selebar 300 dari 900 satuan viewBox di layar lebar, 180 di
+     layar sempit. Kolom 180 yang tetap adalah 20 % dari gambar, berapa pun
+     lebar layarnya: di 1440x900 svg melebar ke 1.112 px dan kolom labelnya ikut
+     melebar hanya sampai 222 px — 9 dari 11 nama paket terpotong, sama persis
+     dengan di ponsel, dan di kertas <title> tidak bisa disentuh sama sekali.
+     Di layar sempit kolom lebar justru merugikan (208 px dari 328 px jendela
+     habis untuk label), jadi lantainya tetap 180 di sana. */
+  const wide = typeof window !== 'undefined' && window.innerWidth >= 900;
+  const labelWidth = wide ? 300 : 180;
+  /* Jendela waktu dihitung SEKALI di sini dan dioper ke setiap gambar. Gambar
+     layar akan menghitung jendela yang sama sendiri; lembar cetak per halaman
+     TIDAK BISA — tiap potongan baris punya rentang tanggalnya sendiri, dan
+     tanpa `from`/`to` bersama setiap halaman akan memakai skala waktu yang
+     berbeda: tiga halaman jadwal yang tidak bisa dibandingkan satu sama lain. */
+  const window_ = dateWindow(rows);
+  const common = {
+    labelWidth,
+    timelineWidth: 900 - labelWidth,
+    zoom: state.zoom,
+    weekends: true,
+    // null → charts.js jatuh ke jam peramban; itu hanya terjadi bila server
+    // benar-benar tidak mengirim as_of.
+    today,
+    from: window_.from,
+    to: window_.to,
+    ariaLabel: `Jadwal WBS ${project.code || ''}`.trim(),
+  };
+
+  const chart = ganttChart({
+    ...common,
+    rows,
+    // Catatan sumber ikut TERCETAK (ia di dalam svg), dan di kertas bilah zoom
+    // sudah disembunyikan blok cetak — jadi kalimat inilah yang memberi tahu
+    // pembaca kertasnya apa yang sedang ia lihat.
+    sourceNote: note,
+  });
+
+  const printPages = printSheets(rows, common, note);
+
+  const sheet = el(`.card.gantt-sheet${printPages ? '.is-paginated' : ''}`, [
+    el('.card-head', [
+      // .card-head TIDAK disembunyikan blok cetak — inilah judul yang sampai
+      // ke kertas, dan ia harus menyebut proyeknya.
+      el('h2', { text: `Jadwal — ${project.code || ''} ${project.name || ''}`.trim() }),
+      el('.spacer'),
+      /* role=group + aria-pressed: skala yang aktif dulu disampaikan HANYA oleh
+         warna (class .primary), jadi pembaca layar tidak diberi tahu apa pun
+         tentang skala mana yang sedang berlaku. */
+      el('.filters', {
+        role: 'group',
+        'aria-label': 'Skala waktu gantt',
+        style: { border: '0', margin: '0', padding: '0' },
+      }, [
+        ...ZOOMS.map((zoom) => {
+          const active = state.zoom === zoom.key;
+          const node = button(zoom.label, {
+            size: 'sm',
+            variant: active ? 'primary' : 'ghost',
+            onClick: () => {
+              if (state.zoom === zoom.key) return;
+              state.zoom = zoom.key;
+              paint(clear(host), ctx);
+              /* Menggambar ulang kartu MEMBUANG tombol yang barusan ditekan,
+                 dan fokus papan ketik ikut jatuh ke <body>: Tab berikutnya
+                 memulai lagi dari puncak halaman. Fokusnya dikembalikan ke
+                 tombol yang sama pada kartu yang baru. */
+              const again = host.querySelector(`.gantt-sheet .filters .btn[data-zoom="${zoom.key}"]`);
+              if (again) again.focus();
+            },
+          });
+
+          node.dataset.zoom = zoom.key;
+          node.setAttribute('aria-pressed', active ? 'true' : 'false');
+
+          return node;
+        }),
+        button('Cetak', { size: 'sm', variant: 'ghost', iconName: 'print', onClick: () => window.print() }),
+      ]),
+    ]),
+    // .chart-scroll: gantt lebarnya 900 px alami dan menggulir mendatar di
+    // ponsel; blok cetak P1-A sudah menjadikannya `overflow: visible`.
+    el('.card-body', el('.chart-scroll', chart)),
+    // Lembar cetak berhalaman (hanya bila jadwalnya lebih tinggi dari satu
+    // kertas) — tidak tergambar di layar, dan menggantikan gambar di atas saat
+    // dicetak.
+    printPages,
+    el('.card-body', { style: { borderTop: '1px solid var(--border)', paddingTop: '10px' } }, [
+      /* Salinan DOM kalimat sumber. Di ponsel kalimat yang di dalam svg berada
+         di luar jendela pada posisi gulir awal (diukur 390x844: ia membentang
+         37,4–444,7 px pada penggulir selebar 328 px, terpotong 85,7 px, dan
+         pembacanya melihatnya berhenti di tengah kata), dan aturan pencocokan
+         baseline adalah salah satu dari dua hal yang layar ini ada untuk
+         menyampaikannya. Di kertas salinan ini disembunyikan: yang tercetak
+         adalah kalimat di dalam svg. */
+      el('p.cell-sub.gantt-note-dom', { text: note, style: { margin: '0 0 6px' } }),
+      el('p.cell-sub', {
+        /* ROADMAP: "ketergantungan gantt ditunda ke Fase 2 (kolomnya tidak ada
+           — impor MPP-XML mengabaikan PredecessorLink, legenda mengatakannya)."
+           Kalimat ini ADALAH legenda yang mengatakannya. */
+        text: 'Ketergantungan antar tugas tidak digambar: kolomnya belum ada di basis data, dan impor MPP-XML '
+          + 'mengabaikan PredecessorLink. Garis yang digambar dari kolom yang tidak ada akan menjadi jadwal '
+          + 'karangan.',
+        style: { margin: 0 },
+      }),
+      duplicates.length
+        ? el('p.cell-sub', {
+          text: `Kode WBS ganda pada baseline: ${duplicates.join(', ')} — yang dipakai baris terakhir. `
+            + 'Kode WBS tidak dijamin unik per proyek oleh basis data.',
+          style: { margin: '6px 0 0', color: 'var(--warning)' },
+        })
+        : null,
+      liveDuplicates.length
+        ? el('p.cell-sub', {
+          text: `Kode WBS ganda pada WBS yang berlaku: ${liveDuplicates.join(', ')} — setiap barisnya `
+            + 'memakai baris beku YANG SAMA sebagai pembanding, jadi jumlah "cocok" di kaki gambar '
+            + 'lebih besar daripada isi baseline. Kode WBS tidak dijamin unik per proyek oleh basis data.',
+          style: { margin: '6px 0 0', color: 'var(--warning)' },
+        })
+        : null,
+      /* Baseline yang GAGAL dibaca: kalimatnya sudah ada di dalam svg (ikut
+         tercetak), tetapi kegagalan yang bisa dicoba lagi butuh pintu keluar —
+         dan sebuah pintu keluar tidak bisa hidup di dalam svg yang tercetak. */
+      fault
+        ? el('p.cell-sub', { style: { margin: '6px 0 0', color: 'var(--warning)' } }, [
+          el('span', { text: `${faultSentence(fault)} ` }),
+          button('Coba lagi', {
+            size: 'sm',
+            variant: 'ghost',
+            onClick: () => renderJadwal(host, { id, project }),
+          }),
+        ])
+        : null,
+      /* Siklus parent_id: barisnya tetap tergambar (server mengangkatnya menjadi
+         akar), tetapi posisinya di pohon bukan posisi yang tersimpan — dan
+         urutan serta indentasi gantt dibaca orang sebagai struktur. */
+      (cycles || []).length
+        ? el('p.cell-sub', {
+          text: `Induk melingkar pada ${cycles.join(', ')}: baris ini menunjuk induk yang justru `
+            + 'keturunannya sendiri, jadi ia digambar sebagai akar. Barisnya lengkap, letaknya di '
+            + 'pohon tidak — perbaiki induknya di basis data.',
+          style: { margin: '6px 0 0', color: 'var(--warning)' },
+        })
+        : null,
+    ]),
+  ]);
+
+  host.appendChild(sheet);
+  scrollTodayIntoView(sheet);
+}
+
+/** 'YYYY-MM-DD' yang benar-benar ada; selain itu null (aturan parseDay charts.js). */
+function validDay(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value ?? ''));
+
+  if (!match) return null;
+
+  const date = new Date(Date.UTC(+match[1], +match[2] - 1, +match[3]));
+  const same = date.getUTCFullYear() === +match[1] && date.getUTCMonth() === +match[2] - 1
+    && date.getUTCDate() === +match[3];
+
+  return same ? `${match[1]}-${match[2]}-${match[3]}` : null;
+}
+
+/** Rentang tanggal seluruh jadwal — rencana hidup DAN baris beku. */
+function dateWindow(rows) {
+  const days = rows
+    .flatMap((row) => [row.start, row.end, row.baselineStart, row.baselineEnd])
+    .map(validDay)
+    .filter(Boolean)
+    .sort();
+
+  return { from: days[0] || undefined, to: days[days.length - 1] || undefined };
+}
+
+/* Baris per halaman cetak. Satu potongan setinggi 16 baris menghasilkan svg
+   36 + 16x28 + 10 + legenda + catatan = 542 satuan pada lebar 900 — 169 mm di
+   atas kertas A4 lanskap selebar 281 mm, di bawah tinggi cetaknya (192 mm). */
+const PRINT_ROWS = 16;
+
+/**
+ * Lembar cetak BERHALAMAN, karena sebuah <svg> tidak bisa dipaginasi.
+ *
+ * Diukur 7 Sep 2026 pada jadwal 66 baris (6 induk x 10 anak — ukuran biasa
+ * untuk pekerjaan gedung) yang dicetak dari Chromium: 7 halaman, halaman 2
+ * memuat HANYA judul kartu, halaman 3 kosong sama sekali, halaman 5 dan 6
+ * memuat baris TANPA satu pun sumbu tanggal (tidak ada pita bulan, tidak ada
+ * label tick — dibaca per halaman dengan pdftotext), dan satu baris terbelah di
+ * batas halaman. Tidak ada baris yang hilang, tetapi tiga dari empat halaman
+ * gambar tidak punya cara untuk tahu bar-nya berdiri di bulan apa. Syarat
+ * harness `print_page_is_landscape` hijau apa pun yang terjadi: ia diukur pada
+ * proyek 12 baris yang gambarnya muat satu halaman.
+ *
+ * Karena itu potongannya dibuat DI SINI, satu svg per halaman, masing-masing
+ * membawa pita bulan, tick, garis "Hari ini" dan legendanya sendiri — dan
+ * semuanya memakai `from`/`to` yang SAMA supaya skalanya sebanding. Jadwal yang
+ * memang muat satu halaman tidak dipotong sama sekali (null → kartu tetap
+ * mencetak gambar layarnya, perilaku yang sudah diverifikasi S26).
+ */
+function printSheets(rows, common, note) {
+  if (rows.length <= PRINT_ROWS) return null;
+
+  const pages = Math.ceil(rows.length / PRINT_ROWS);
+
+  return el('.gantt-print', Array.from({ length: pages }, (_, page) => {
+    const slice = rows.slice(page * PRINT_ROWS, (page + 1) * PRINT_ROWS);
+
+    return el('.gantt-print-page', ganttChart({
+      ...common,
+      rows: slice,
+      ariaLabel: `${common.ariaLabel} — halaman ${page + 1} dari ${pages}`,
+      sourceNote: `${note} · halaman ${page + 1} dari ${pages}, baris `
+        + `${page * PRINT_ROWS + 1}–${page * PRINT_ROWS + slice.length} dari ${rows.length}.`,
+    }));
+  }));
+}
+
+/**
+ * Gulir mendatar awal diletakkan pada garis "Hari ini", bukan pada nol.
+ *
+ * Diukur 390x844 pada PRJ-2026-001: penggulir selebar 328 px (isi 720 px),
+ * garis "Hari ini" di x=418,7 px — 59,7 px DI LUAR tepi kanan — dan labelnya
+ * 92,7 px di luar. Garis itu satu dari dua hal yang layar ini ada untuk
+ * menyampaikannya, dan pembaca ponsel tidak pernah melihatnya kecuali ia
+ * menebak bahwa gambarnya bisa digulir. Kedua syarat harness yang menutupinya
+ * hijau tanpa syarat: keduanya membaca atribut SVG, bukan layar.
+ *
+ * Kolom label ikut tergulir keluar (ia bagian dari svg yang sama) — karena itu
+ * kalimat sumber juga digambar sebagai paragraf DOM di kaki kartu, dan gulir
+ * hanya dilakukan bila garisnya memang di luar jendela.
+ */
+function scrollTodayIntoView(sheet) {
+  const scroller = sheet.querySelector('.chart-scroll');
+  const svg = scroller && scroller.querySelector('svg.chart-gantt');
+  const line = svg && svg.querySelector('line.gantt-today');
+
+  if (!line || typeof requestAnimationFrame !== 'function') return;
+
+  requestAnimationFrame(() => {
+    const width = svg.getBoundingClientRect().width;
+    const box = (svg.getAttribute('viewBox') || '').split(' ').map(Number);
+
+    if (!width || !box[2] || scroller.scrollWidth <= scroller.clientWidth) return;
+
+    const x = Number(line.getAttribute('x1')) * (width / box[2]);
+    const view = scroller.clientWidth;
+
+    // Sudah terlihat (dengan sedikit ruang di kedua sisi) → jangan diganggu.
+    if (x >= scroller.scrollLeft + 24 && x <= scroller.scrollLeft + view - 24) return;
+
+    scroller.scrollLeft = Math.max(0, Math.min(scroller.scrollWidth - view, x - view / 2));
+  });
+}
+
+/**
+ * Pohon bersarang → daftar rata DALAM URUTAN POHON, dengan `level` diturunkan
+ * dari kedalamannya.
+ *
+ * Urutan penting dan tidak gratis: muatan baseline diurutkan
+ * (sort_order, wbs_code), yang menyelang-nyeling induk dan anak dari cabang
+ * berbeda (A, A.1, B.1, C.1, A.2, B, …). Menggambar dalam urutan muatan
+ * menghasilkan gantt yang acak. Sisi HIDUP bersarang, jadi urutan pohonnya
+ * diambil dari sarangnya sendiri.
+ *
+ * `prj_wbs_tasks` tidak punya kolom level/depth/path — hierarkinya `parent_id`
+ * plus konvensi kode bertitik. Kedalaman karena itu dihitung di sini.
+ */
+function flatten(tasks, level = 0, out = []) {
+  (tasks || []).forEach((task) => {
+    out.push({ ...task, level });
+    if (Array.isArray(task.children) && task.children.length) flatten(task.children, level + 1, out);
+  });
+
+  return out;
+}
+
+/** Kode yang muncul lebih dari sekali, dalam urutan kemunculan keduanya. */
+function duplicateCodes(codes) {
+  const seen = new Set();
+  const duplicates = [];
+
+  codes.forEach((code) => {
+    if (!code) return;
+    if (seen.has(code) && !duplicates.includes(code)) duplicates.push(code);
+    seen.add(code);
+  });
+
+  return duplicates;
+}
+
+/**
+ * Baris baseline diindeks per `wbs_code`.
+ *
+ * Basis data TIDAK menjamin `wbs_code` unik — DI KEDUA SISI, dan keduanya
+ * diperiksa: indeks `(baseline_id, wbs_code)` pada `prj_baseline_tasks` dan
+ * `(project_id, wbs_code)` pada `prj_wbs_tasks` sama-sama bukan `unique`
+ * (dibaca dari sqlite_master), dan validasinya hanya `required|string|max:20`.
+ * Sebuah Map diam-diam menyimpan yang terakhir; di sini tabrakan sisi BEKU
+ * dihitung, dan tabrakan sisi HIDUP dihitung di `paint()` — angka yang salah
+ * yang mengaku dirinya salah lebih baik daripada angka yang salah dan diam.
+ *
+ * (Sampai verifikasi P1-H docblock ini mengutip indeks tabel HIDUP sebagai
+ * alasan memeriksa sisi BEKU, dan sisi hidup itu sendiri justru tidak
+ * diperiksa: tepat sisi yang dikutip.)
+ */
+function indexBaseline(baseline) {
+  const index = new Map();
+  const rows = ((baseline && baseline.tasks) || []).filter((task) => task && task.wbs_code);
+
+  rows.forEach((task) => index.set(task.wbs_code, task));
+
+  return { index, duplicates: duplicateCodes(rows.map((task) => task.wbs_code)) };
+}
+
+/** '60.0000' (0..100) → 0.6 (0..1); null tetap null, bukan 0. */
+function toFraction(value) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const number = Number(value);
+
+  return Number.isFinite(number) ? number / 100 : null;
+}
+
+/**
+ * Kenapa bar pembanding tidak ada, dalam kalimat yang membedakan "sudah
+ * ditanya, jawabannya tidak ada" dari "tidak bisa ditanya".
+ *
+ * `stage: 'list'` — daftar baselinenya sendiri gagal: layar ini TIDAK TAHU
+ * apakah proyek ini punya rencana beku, dan mengatakan "belum ada" di situ
+ * adalah mengarang fakta tentang rencana yang disepakati.
+ * `stage: 'show'` — daftarnya menjawab, isinya yang gagal: keberadaan
+ * baselinenya justru diketahui, lengkap dengan kodenya.
+ */
+function faultSentence(fault) {
+  const how = fault.status === 403
+    ? 'tidak boleh dibaca oleh peran Anda'
+    : fault.status
+      ? `gagal dimuat (galat HTTP ${fault.status})`
+      : 'gagal dimuat (sambungan ke server terputus)';
+
+  return fault.stage === 'show'
+    ? `Baseline ${fault.code || 'yang berlaku'} ada, tetapi isinya ${how} — bar pembanding tidak digambar.`
+    : `Daftar baseline ${how}, jadi layar ini tidak tahu apakah proyek ini punya rencana beku — `
+      + 'bar pembanding tidak digambar.';
+}
+
+/** Kalimat di dalam svg — ikut tercetak, dan menyebut apa yang TIDAK cocok. */
+function sourceNote(baseline, fault, matched, total) {
+  const zoom = state.zoom === 'month' ? 'bulanan' : 'mingguan';
+  const scale = `Skala ${zoom}`;
+
+  if (!baseline) {
+    return fault
+      ? `${scale} · ${faultSentence(fault)} Yang tergambar hanya rencana WBS yang berlaku sekarang.`
+      : `${scale} · belum ada baseline beku, jadi tidak ada bar pembanding — yang tergambar hanya rencana `
+        + 'WBS yang berlaku sekarang.';
+  }
+
+  const missing = total - matched;
+  /* Baris beku yang benar-benar ada. Kalau kode hidup kembar, DUA baris layar
+     memakai baris beku yang sama dan `matched` melampaui isi baseline: "12 dari
+     12 cocok" untuk baseline berisi 11 baris. Angkanya tetap dicetak apa
+     adanya, ditambah jumlah yang sebenarnya — bukan dirapikan diam-diam. */
+  const frozenRows = (baseline.tasks || []).length;
+
+  return `${scale} · baseline ${baseline.code || ''} (${matched} dari ${total} tugas cocok`
+    + (missing ? `, ${missing} tanpa pasangan` : '')
+    + (matched > frozenRows ? `, dari ${frozenRows} baris beku — ada kode WBS kembar` : '')
+    + '), dicocokkan menurut kode WBS.';
+}

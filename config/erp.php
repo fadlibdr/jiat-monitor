@@ -1,0 +1,999 @@
+<?php
+
+/*
+ * Central ERP configuration: company profile defaults, document numbering,
+ * Indonesian tax parameters, payroll (BPJS / overtime) parameters.
+ *
+ * Statutory rates change — review yearly against the latest PMK/PP/Kepmenaker.
+ */
+return [
+
+    'company' => [
+        'name' => env('ERP_COMPANY_NAME', 'PT Nusantara Karya Integrasi'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Security / production hardening
+    |--------------------------------------------------------------------------
+    | force_https    — generate https:// URLs (behind a TLS-terminating proxy).
+    | api_rate_limit — requests per minute for the named 'api' RateLimiter
+    |                  (per authenticated user id, falling back to client IP).
+    */
+    'security' => [
+        'force_https' => env('FORCE_HTTPS', false),
+        'api_rate_limit' => env('API_RATE_LIMIT', 120),
+        /*
+         * P-3d — batas laju untuk TOKEN INTEGRASI (ledger pemilik
+         * ROADMAP-HASHMICRO §5 baris 10: 300 per menit). Ember terpisah dari
+         * yang di atas, dikunci per token, supaya integrasi tidak memakan jatah
+         * peramban dan sebaliknya (Modules\Iam\Support\IntegrationRate).
+         */
+        'integration_rate_limit' => env('INTEGRATION_RATE_LIMIT', 300),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Document numbering formats
+    |--------------------------------------------------------------------------
+    | Tokens: {Y} = 4-digit year, {M2} = 2-digit month, {RM} = roman month,
+    | {N3}/{N4}/{N5} = zero-padded sequence. Sequences reset per type per year.
+    | Consumed by Modules\Core\Services\DocumentNumberService.
+    |
+    | Every format MUST contain {Y} as well as a sequence token: the counter
+    | restarts at 1 each January, so a format without the year re-issues the
+    | previous year's codes and the unique code column rejects them. The settings
+    | screen enforces this (SettingService::DOCUMENT_FORMAT_PATTERN); these
+    | defaults have to satisfy the same rule.
+    */
+    'documents' => [
+        'QTN' => 'QTN/{Y}/{RM}/{N4}',   // CRM quotation (penawaran)
+        'CTR' => 'CTR/{Y}/{RM}/{N4}',   // CRM contract (kontrak/SPK dari customer)
+        'CCO' => 'CCO/{Y}/{RM}/{N4}',   // Contract change order (pekerjaan tambah-kurang)
+        'PRJ' => 'PRJ-{Y}-{N3}',        // Project code
+        'BOQ' => 'BOQ/{Y}/{N4}',        // Bill of quantities / RAB
+        'RAP' => 'RAP/{Y}/{N4}',        // Rencana Anggaran Pelaksanaan (cost budget)
+        'PR' => 'PR/{Y}/{RM}/{N4}',    // Purchase requisition
+        'RFQ' => 'RFQ/{Y}/{RM}/{N4}',   // Request for quotation (banding penawaran vendor)
+        'PO' => 'PO/{Y}/{RM}/{N4}',    // Purchase order
+        'GRN' => 'GRN/{Y}/{RM}/{N4}',   // Goods receipt note
+        'ISS' => 'ISS/{Y}/{RM}/{N4}',   // Material issue (pengeluaran barang)
+        'TRF' => 'TRF/{Y}/{RM}/{N4}',   // Stock transfer
+        'ADJ' => 'ADJ/{Y}/{RM}/{N4}',   // Stock adjustment (opname)
+        'SPK' => 'SPK/{Y}/{RM}/{N4}',   // Subcontract work order (SPK subkon)
+        'ADS' => 'ADS/{Y}/{RM}/{N4}',   // Addendum SPK
+        'CLM' => 'CLM/{Y}/{RM}/{N4}',   // Subcontractor progress claim (opname)
+        'INV' => 'INV/{Y}/{RM}/{N4}',   // AR invoice (termin)
+        'BIL' => 'BIL/{Y}/{RM}/{N4}',   // AP bill (tagihan vendor)
+        'RCV' => 'RCV/{Y}/{RM}/{N4}',   // Payment received
+        'PAY' => 'PAY/{Y}/{RM}/{N4}',   // Payment out
+        'JV' => 'JV/{Y}/{M2}/{N4}',    // Journal voucher
+        'BST' => 'BST/{Y}/{RM}/{N4}',   // Imported bank statement (rekening koran)
+        'PYR' => 'PYR/{Y}/{M2}/{N3}',   // Payroll run
+        'CTI' => 'CTI/{Y}/{RM}/{N4}',   // Pengajuan cuti/izin
+        'TKT' => 'TKT-{Y}{M2}-{N4}',    // Service ticket
+        'BAST' => 'BAST/{Y}/{RM}/{N3}',  // Berita acara serah terima
+        'DRP' => 'DRP/{Y}/{M2}/{N4}',   // Daily report (laporan harian)
+        'IKL' => 'IKL/{Y}/{RM}/{N4}',   // Izin kerja lapangan (P0-C)
+        'ILB' => 'ILB/{Y}/{RM}/{N4}',   // Izin kerja lembur (P0-C)
+        'IMK' => 'IMK/{Y}/{RM}/{N4}',   // Izin masuk/keluar material & peralatan (P0-C)
+        'SVC' => 'SVC/{Y}/{RM}/{N4}',   // ServiceDesk maintenance contract
+        'AST' => 'AST-{Y}-{N4}',        // Asset code ({Y} added: 'AST-{N4}' collided each January)
+        'DEP' => 'DEP/{Y}/{RM}/{N3}',   // Asset deployment (mobilisasi)
+        'DPR' => 'DPR/{Y}/{M2}/{N3}',   // Asset depreciation run
+        'MTC' => 'MTC/{Y}/{RM}/{N3}',   // Asset maintenance record
+        'PM' => 'PM/{Y}/{RM}/{N4}',    // Preventive maintenance visit
+        'K3' => 'K3/{Y}/{RM}/{N3}',    // Register kecelakaan kerja (SMK3)
+        'POC' => 'POC/{Y}/{M2}/{N3}',   // Pengakuan pendapatan PSAK 115 (persentase penyelesaian)
+        'SDS' => 'SDS/{Y}/{RM}/{N4}',   // Pengajuan persetujuan shop drawing (P1-ENG)
+        'SMS' => 'SMS/{Y}/{RM}/{N4}',   // Pengajuan persetujuan material (P1-ENG)
+        'TRM' => 'TRM/{Y}/{RM}/{N4}',   // Transmittal dokumen (P1-ENG)
+        'IPP' => 'IPP/{Y}/{RM}/{N4}',   // Ijin pelaksanaan pekerjaan (P1-ENG)
+        'QCI' => 'QCI/{Y}/{RM}/{N4}',   // Inspeksi mutu (P1-QC)
+        'NCR' => 'NCR/{Y}/{RM}/{N4}',   // Laporan ketidaksesuaian / non-conformance report (P1-QC)
+        'BAN' => 'BAN/{Y}/{RM}/{N4}',   // Berita acara negosiasi vendor (P2)
+        'AWD' => 'AWD/{Y}/{RM}/{N4}',   // Keputusan pemenang / award decision (P2 — AWD dipilih agar tidak bentrok BAP/BAPP zona P3)
+        'PBL' => 'PBL/{Y}/{N4}',        // Rencana pengadaan / pola belanja (P2 — PBL dipilih agar tidak bentrok tipe RPB milik retur pembelian)
+        'OPN' => 'OPN/{Y}/{RM}/{N4}',   // Opname progres ke pemilik (P3 — sisi pendapatan; CLM tetap milik opname subkon)
+        'BAPP' => 'BAPP/{Y}/{RM}/{N4}',  // Berita acara pemeriksaan pekerjaan per zona (P3 — BAPP, kode yang disisakan AWD)
+        'BSK' => 'BSK/{Y}/{RM}/{N4}',   // BAST subkontraktor I/II (P3 — BST sudah dipakai rekening koran, BAST milik serah terima owner)
+        'SP3' => 'SP3/{Y}/{RM}/{N4}',   // SP3 Induk — SPK mandor upah borongan (P4; SPK tetap milik subkon)
+        'OPM' => 'OPM/{Y}/{RM}/{N4}',   // Opname mandor (P4 — CLM milik opname subkon, OPN milik opname owner)
+        'PPK' => 'PPK/{Y}/{RM}/{N4}',   // PPK — perintah kerja alat sewa & jasa berbasis periode (P5)
+        'PPKB' => 'PPKB/{Y}/{RM}/{N4}',  // Tagihan per periode atas PPK (P5 — kuantitas turunan register/kalender)
+        'HSE' => 'HSE/{Y}/{M2}/{N4}',   // Formulir K3 harian FM-10-13 (P6 — {M2} meniru DRP: dokumen harian)
+        'TND' => 'TND/{Y}/{RM}/{N4}',   // Paket tender — berkas satu lelang (P7; TDR/TND, bukan LEAD yang tak bernomor)
+        'TKD' => 'TKD/{Y}/{RM}/{N4}',   // Lembar hitung TKDN atas satu penawaran (P7)
+        'RKK' => 'RKK/{Y}/{RM}/{N4}',   // Rencana Keselamatan Konstruksi penawaran (P7 — Permen PUPR 10/2021)
+        'MTD' => 'MTD/{Y}/{N4}',        // Entri pustaka metode kerja (P7 — master, tanpa bulan seperti BOQ/RAP)
+        // F-2: OVB tanpa {RM}, dan {Y}-nya adalah TAHUN BUKU yang dianggarkan
+        // (OverheadBudget::documentNumberYear), bukan tahun jam server — sebuah
+        // anggaran 2031 yang dibuat hari ini berkode OVB/2031/0001. Bulan
+        // pembuatannya kebisingan pada dokumen yang identitasnya sebuah tahun.
+        'OVB' => 'OVB/{Y}/{N4}',        // Anggaran overhead per tahun buku (F-2)
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Taxes
+    |--------------------------------------------------------------------------
+    */
+    'tax' => [
+        // PMK 131/2024: statutory 12% applied on DPP "nilai lain" (11/12 of price)
+        // for non-luxury goods/services => 11% effective. Stored as the effective rate.
+        'ppn_rate' => 11.0,
+
+        // The statutory rate the faktur itself must state, against DPP nilai
+        // lain. Documents and reports use the effective rate above; only the
+        // e-Faktur export needs this one, to work back from the PPN charged to
+        // the DPP the faktur has to carry (TaxExportService::fakturDpp). Keep
+        // the two in step: ppn_rate / ppn_headline_rate IS the 11/12 factor.
+        'ppn_headline_rate' => 12.0,
+
+        // PPh 23 on services (jasa) when not covered by PPh final.
+        'pph23_services_rate' => 2.0,
+
+        /*
+         * PPh final UMKM — PP 55/2022 Pasal 56 (melanjutkan PP 23/2018):
+         * 0,5% dari peredaran bruto untuk WP dengan omzet <= Rp 4,8 miliar.
+         * Dipakai P4 untuk upah mandor borongan per asumsi #3 (mandor
+         * diperlakukan sebagai VENDOR dengan PPh final, bukan karyawan PPh
+         * 21): seorang mandor borongan perorangan bukan pemberi jasa
+         * konstruksi bersertifikat PP 9/2022, dan skema finalnya adalah
+         * tarif UMKM ini. Snapshot per SP3 (scm_labor_contracts.pph_rate) —
+         * mengubah angka ini tidak menulis ulang kontrak yang sudah ada.
+         */
+        'pph_final_umkm_rate' => 0.5,
+
+        // PPh final jasa konstruksi — PP 9/2022 classifications.
+        'pph_final_construction' => [
+            'pelaksanaan_kecil_bersertifikat' => 1.75,
+            'pelaksanaan_bersertifikat' => 2.65,
+            'pelaksanaan_tanpa_sertifikat' => 4.00,
+            'perancangan_bersertifikat' => 3.50,
+            'perancangan_tanpa_sertifikat' => 6.00,
+            'terintegrasi_bersertifikat' => 2.65,
+            'terintegrasi_tanpa_sertifikat' => 4.00,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Payroll parameters (review yearly)
+    |--------------------------------------------------------------------------
+    */
+    'payroll' => [
+        'bpjs' => [
+            'kesehatan' => ['company' => 4.0, 'employee' => 1.0, 'salary_cap' => 12000000],
+            'jht' => ['company' => 3.7, 'employee' => 2.0],
+            'jp' => ['company' => 2.0, 'employee' => 1.0, 'salary_cap' => 10547400],
+            'jkk' => [
+                'default_risk_class' => 3, // construction is typically class 3+
+                'rates' => [1 => 0.24, 2 => 0.54, 3 => 0.89, 4 => 1.27, 5 => 1.74],
+            ],
+            'jkm' => ['company' => 0.30],
+        ],
+        // Kepmenaker overtime: hourly wage = monthly wage / 173.
+        'overtime' => ['divisor' => 173],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | HR — cuti tahunan (UU 13/2003 Pasal 79 jo. PP 35/2021)
+    |--------------------------------------------------------------------------
+    */
+    'hr' => [
+        'leave' => [
+            // 12 hari kerja per tahun hak, terbit setelah 12 bulan masa kerja,
+            // dihitung dari ulang tahun join_date (LeaveService::balance).
+            'annual_days' => 12,
+            // Kebijakan bawaan: sisa saldo HANGUS di ulang tahun berikutnya.
+            // true = sisa SATU tahun sebelumnya ikut terbawa — bukan akumulator
+            // tanpa batas yang diam-diam menumbuhkan liabilitas cuti.
+            'carry_over' => false,
+            // 6 = pekan kerja enam hari (hanya Minggu libur — rezim lapangan);
+            // 5 = Sabtu juga libur. Menentukan hitungan day_count cuti.
+            'workweek_days' => 6,
+        ],
+        'attendance' => [
+            // Radius wajar dari titik proyek untuk absensi ponsel, dalam meter.
+            // 500 m memaafkan fix GPS kota yang buruk dan proyek yang titik
+            // petanya ditaruh di gerbang, bukan di gedung.
+            //
+            // Ambang ini TIDAK PERNAH menolak absensi. Ia hanya menentukan
+            // baris mana yang ditandai "di luar lokasi" untuk dilihat pengawas.
+            // Absensi yang ditolak berarti orangnya tetap bekerja hari itu dan
+            // sistem tidak punya catatannya sama sekali — yang jauh lebih buruk
+            // daripada catatan bertanda.
+            'geofence_metres' => 500,
+        ],
+
+        /*
+         * Timesheet & lembur dari absensi (F-5) — KEBIJAKAN PEMILIK, 14 Sep 2026.
+         *
+         * Baris roadmap F-5 menunda paket ini "sampai >= 1 bulan data F-4,
+         * tanpa itu aturan pembulatan lembur dikarang". Penundaan itu dicabut
+         * dengan menghapus sebabnya: angka-angka di bawah DISEBUT pemilik, dan
+         * ia tinggal di sini — bukan tertanam di kode — supaya kebijakan yang
+         * berbeda adalah satu suntingan di layar Pengaturan, bukan satu rilis.
+         *
+         * Semua nilai di blok ini MENGGESER UANG, tidak seperti tetangganya
+         * `attendance.geofence_metres` yang tidak menyentuh satu rupiah pun.
+         * Karena itu registri Pengaturan memberinya kalimat pembuka sendiri,
+         * dan setiap perubahannya tercatat di Log Audit (baris core_settings
+         * sudah diamati AuditedModels).
+         */
+        'timesheet' => [
+            /*
+             * Jam mulai kerja yang menjadi acuan "terlambat". Pemilik menyebut
+             * TOLERANSI-nya (10 menit), bukan jam mulainya; tanpa jam mulai,
+             * toleransi tidak punya apa pun untuk diukur. 08:00 adalah bawaan
+             * yang dipilih di sini dan dicetak di layar timesheet apa adanya —
+             * bukan angka yang diam-diam dianggap berlaku di mana-mana.
+             */
+            'day_start' => '08:00',
+            // Datang di dalam toleransi = tidak terlambat sama sekali, dan
+            // menit terlambat dihitung dari BATAS toleransi, bukan dari jam
+            // mulai: 08:12 dengan toleransi 10 menit = terlambat 2 menit.
+            'late_tolerance_minutes' => 10,
+            // Jam kerja normal sehari. Menit kerja DI ATAS angka inilah yang
+            // menjadi calon lembur; menaikkannya mengecilkan lembur setiap
+            // orang setiap hari.
+            'normal_hours_per_day' => 8,
+            /*
+             * Istirahat yang TIDAK dihitung jam kerja (UU 13/2003 Pasal 79
+             * ayat 2 huruf b: sekurang-kurangnya setengah jam sesudah bekerja
+             * 4 jam terus-menerus, dan tidak termasuk jam kerja). Dipotong dari
+             * rentang masuk→pulang SEBELUM lembur dihitung.
+             *
+             * Tanpa angka ini, hari kerja 08:00–17:00 — bentuk hari kerja yang
+             * paling biasa yang ada — terbaca sembilan jam kerja dan
+             * menghasilkan satu jam lembur setiap hari untuk setiap orang,
+             * tanpa satu bendera pun. Pemilik tidak menyebut angka ini pada
+             * 14 Sep 2026; 60 menit dipilih DI SINI sebagai bawaan yang dicetak
+             * layar apa adanya, persis seperti day_start 08:00 — dan seperti
+             * day_start, ia keputusan pemilik yang masih terbuka.
+             *
+             * Diisi 0, rentang masuk→pulang kembali dibaca sebagai jam kerja
+             * seutuhnya. Itu pilihan yang sah untuk regu yang memang tidak
+             * beristirahat, dan layar mengatakan mana yang sedang berlaku.
+             */
+            'break_minutes' => 60,
+            // Pembulatan lembur ke kelipatan terdekat, DILAKUKAN SEKALI — pada
+            // kelebihan menit di atas jam normal, bukan pada rentang kerjanya
+            // (TimesheetService::overtimeMinutes).
+            'rounding_minutes' => 15,
+            // Di bawah ini tidak dihitung lembur sama sekali. Diterapkan
+            // SESUDAH pembulatan: 22 menit membulat ke 15, lalu gugur di sini.
+            'overtime_minimum_minutes' => 30,
+            /*
+             * Batas Kepmenaker 102/2004 Pasal 3: 3 jam sehari dan 14 jam
+             * seminggu. Melebihinya DICATAT DAN DITANDAI, tidak dipotong
+             * diam-diam dan tidak ditolak — pola yang sama dengan geofence
+             * F-4. Memotong diam-diam berarti layar mengatakan angka yang
+             * berbeda dari yang benar-benar dikerjakan orangnya.
+             */
+            'overtime_daily_cap_hours' => 3,
+            'overtime_weekly_cap_hours' => 14,
+            /*
+             * Tarif Kepmenaker 102/2004 Pasal 11, dalam PERSEN upah sejam:
+             * 150% untuk jam pertama tiap hari lembur, 200% untuk jam
+             * berikutnya. Upah sejam sendiri = upah sebulan / pembagi, dan
+             * pembaginya setelan tersendiri (payroll.overtime.divisor, grup
+             * "BPJS & Lembur") karena ia sudah ada sejak P0 dan dibaca jalur
+             * lama yang tetap hidup.
+             *
+             * Tarif akhir pekan/hari libur (skala 2x/3x/4x, Pasal 11 ayat 2)
+             * TIDAK dibangun paket ini, dan hari non-kerja karena itu TIDAK
+             * ikut diusulkan sebagai lembur — memakai tarif hari kerja untuk
+             * hari libur berarti membayar kurang tanpa ada yang bisa melihat
+             * sebabnya.
+             */
+            'overtime_first_hour_pct' => 150,
+            'overtime_next_hours_pct' => 200,
+        ],
+    ],
+
+    'projects' => [
+        'default_retention_pct' => 5.0, // retensi ditahan sampai masa pemeliharaan selesai
+        /*
+         * Jam kerja per hari, dipakai untuk mengubah man-days pada laporan harian
+         * menjadi man-hours pada statistik K3 (frequency / severity rate).
+         * 7 jam adalah pola 6 hari kerja menurut UU Ketenagakerjaan; pola 5 hari
+         * adalah 8 jam.
+         */
+        'working_hours_per_day' => 7.0,
+        /*
+         * Ambang cakupan realisasi biaya untuk CPI (persen). Setiap kategori
+         * biaya yang dianggarkan di RAP harus mencatat realisasi minimal
+         * sekian persen dari anggaran berjalannya (anggaran kategori x
+         * planned_pct laporan) sebelum EVM mau menandai CPI sebagai andal.
+         * Uji keberadaan saja pernah dikalahkan dengan Rp 4.000: satu baris
+         * Rp 1.000 di tiap kategori kosong menghijaukan CPI 144x pada demo.
+         */
+        'cpi_coverage_min_pct' => 50.0,
+        /*
+         * Ambang laporan varian material (teori AHSP x volume BOQ vs bon
+         * gudang). Sebuah baris ditandai "melewati ambang" bila selisihnya
+         * melebihi persen INI DAN rupiah INI sekaligus — dua-duanya, supaya
+         * selisih 40% pada pasir Rp 400 ribu tidak berisik sementara selisih
+         * 0,5% pada paket besi Rp 12,44 miliar (= Rp 62 juta) tetap tertangkap;
+         * atau bila selisihnya sendiri sudah mencapai always_show berapa pun
+         * persennya. Layar varian mencetak aturan ini apa adanya dari jawaban
+         * server, jadi mengubah angka di sini mengubah kalimat yang dibaca
+         * pengawas lapangan.
+         */
+        'material_variance_pct_threshold' => 5.0,
+        'material_variance_value_threshold' => 5_000_000,
+        'material_variance_always_show_value' => 50_000_000,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Rekonsiliasi bank
+    |--------------------------------------------------------------------------
+    | How far apart a bank movement and its ERP document may be dated before the
+    | matcher stops proposing them as the same event. Inter-bank transfers and
+    | cheques clear over several days, so nothing useful is proposed at 0; a very
+    | wide window makes every payment a candidate and the ranking meaningless.
+    */
+    /*
+    |--------------------------------------------------------------------------
+    | Folder terpantau rekening koran (Fase 3 / P-3c)
+    |--------------------------------------------------------------------------
+    | Satu folder di server, sub-folder per KODE rekening bank, diisi oleh
+    | pemilik/administrator DARI LUAR aplikasi (scp/rclone/salinan manual —
+    | PANDUAN-ADMINISTRATOR §5.13). fin:bank-inbox membacanya tiap jam dan
+    | HANYA membaca: aplikasi tidak pernah menulis, memindah, atau menghapus
+    | berkas di sana; yang ditulis adalah ledger fin_bank_inbox_files. Bawaan
+    | di bawah storage/app/private, yang sudah dikecualikan rsync --delete
+    | oleh deploy/sync-erp1.sh dan ikut dicadangkan bersama lampiran. Folder
+    | yang belum ada = keadaan bawaan setiap instalasi baru: perintah berkata
+    | begitu dan keluar 0. Bukan SFTP, bukan host-to-host
+    | (docs/KEPUTUSAN-INTEGRASI.md §10). Konstanta waktu-pasang, sengaja
+    | tidak di layar Pengaturan.
+    |
+    | KOSONG = bawaan BankInboxService::DEFAULT_PATH (storage/app/private/
+    | bank-inbox), yang diselesaikan DI SERVICE dan bukan di sini: berkas
+    | konfigurasi ini harus bisa di-`require` TANPA aplikasi yang di-boot —
+    | `storage_path()` memanggil `Container::getInstance()->storagePath()`, yang
+    | tidak ada pada Container telanjang, dan penyedia data statis
+    | `DocumentFormatValidationTest::shippedDocumentFormats()` me-require berkas
+    | ini apa adanya. Satu `storage_path()` di sini menjatuhkan SELURUH suite di
+    | kedua driver (terukur di gerbang P-3c, bukan di gerbang per-direktori).
+    */
+    'bank_inbox' => [
+        'path' => env('BANK_INBOX_PATH', ''),
+        // Batas yang sama dengan BankStatementParseRequest::MAX_CONTENT (~2 MB teks).
+        'max_bytes' => 2_000_000,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Backup watch
+    |--------------------------------------------------------------------------
+    | Where deploy/backup-erp1.sh records the offsite-copy status, and how old
+    | its last success may be before erp:backup-watch raises an in-app alarm.
+    | Install-time constants, deliberately not on the settings screen: an
+    | operator who can silence the backup alarm from a web form will.
+    */
+    'backup' => [
+        'status_file' => env('ERP_BACKUP_STATUS_FILE', '/var/lib/erp1/offsite-status.json'),
+        'offsite_max_age_days' => 3,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scheduler watchdog (Fase 0 / P-0b)
+    |--------------------------------------------------------------------------
+    | erp:heartbeat writes core_settings scheduler.heartbeat_at every five
+    | minutes from the scheduler itself. A heartbeat older than this many
+    | seconds means the scheduler is not running: GET api/core/health reports
+    | scheduler_status=stale, the dashboard banner appears for core.update
+    | holders, and deploy/erp1-watchdog.sh restarts erp1-scheduler and runs
+    | erp:watchdog-alarm. 1200 s = four missed beats — one missed beat is a
+    | busy minute, four is a dead process. Install-time constant on purpose:
+    | an operator who can widen this from a form will silence the alarm.
+    */
+    'scheduler' => [
+        'heartbeat_max_age_s' => 1200,
+    ],
+
+    'reconciliation' => [
+        'match_date_window_days' => 7,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Proyeksi arus kas
+    |--------------------------------------------------------------------------
+    | Lag penagihan termin (hari): termin siap tagih dianggap ditagih hari ini
+    | dan uangnya diterima sekian hari kemudian; termin terjadwal dihitung pada
+    | jatuh temponya ditambah lag yang sama. Layar proyeksi mencetak asumsi ini
+    | apa adanya dari jawaban server.
+    */
+    'cashflow' => [
+        'termin_collection_days' => 30,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tutup buku / kalender fiskal
+    |--------------------------------------------------------------------------
+    | calendar_months_ahead          how far ahead fin:ensure-calendar creates
+    |                                missing periods. Three means the 2027
+    |                                calendar exists from 1 October 2026, long
+    |                                before anybody dates a document into it.
+    | reminder_days_after_period_end how long a period may sit ended and still
+    |                                open before fin:close-watch nags the people
+    |                                who can close it.
+    |
+    | Install-time constants, deliberately NOT on the settings screen — the same
+    | reading as backup.* above: an operator who can silence the close reminder
+    | from a web form will, and the reminder is the only thing that turns "we
+    | forgot to close June" into something anybody notices.
+    */
+    'closing' => [
+        'calendar_months_ahead' => 3,
+        'reminder_days_after_period_end' => 10,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Notifikasi
+    |--------------------------------------------------------------------------
+    | In-app approval notifications are always on. Email is off until a real
+    | mailer is configured: MAIL_MAILER defaults to "log", and turning this on
+    | before that only writes approval traffic into the application log.
+    */
+    'notifications' => [
+        'email_enabled' => false,
+        // P-3a: sakelar WhatsApp — mati sampai WHATSAPP_* di .env terisi dan
+        // template disetujui Meta (KEPUTUSAN-INTEGRASI.md §4).
+        'whatsapp_enabled' => false,
+        // P-3e: sakelar web push — mati sampai VAPID_* di .env terisi
+        // (artisan core:vapid-keys mencetak sepasang) DAN orangnya menekan
+        // "Aktifkan di perangkat ini" di Profil › Notifikasi.
+        'webpush_enabled' => false,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | WhatsApp (P-3a, T3a.3) — SEMUA dari .env, KOSONG di repo
+    |--------------------------------------------------------------------------
+    | Penyedia: 'meta' = Meta Cloud API langsung (jalur utama, KEPUTUSAN-
+    | INTEGRASI §5); 'qontak' dikenali tetapi pengirimnya belum ditulis
+    | (kanal menjawab skipped yang mengatakannya). Fonnte & sejenis tidak punya
+    | mode — dengan sengaja.
+    |
+    | token, app_secret, verify_token adalah RAHASIA: hanya di .env, tidak
+    | pernah di core_settings, jawaban API, kolom error, atau log
+    | (ProviderErrorScrubber menyaring jawaban penyedia sebelum disimpan).
+    |
+    | templates.* = NAMA template yang DISETUJUI Meta untuk tiap peristiwa
+    | NotificationTemplates, tiga placeholder {{1}} judul {{2}} isi {{3}}
+    | tautan. Kosong = peristiwa itu skipped "template belum disetujui".
+    | Nama variabelnya tercantum di DEPLOYMENT.md §11.
+    */
+    'whatsapp' => [
+        'provider' => env('WHATSAPP_PROVIDER', 'meta'),
+        'api_base' => env('WHATSAPP_API_BASE', 'https://graph.facebook.com'),
+        'api_version' => env('WHATSAPP_API_VERSION', 'v21.0'),
+        'token' => env('WHATSAPP_TOKEN'),
+        'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
+        'app_secret' => env('WHATSAPP_APP_SECRET'),
+        'verify_token' => env('WHATSAPP_VERIFY_TOKEN'),
+        'language' => env('WHATSAPP_TEMPLATE_LANGUAGE', 'id'),
+        'timeout_seconds' => 15,
+        'templates' => [
+            'deadline.due' => env('WHATSAPP_TEMPLATE_DEADLINE_DUE'),
+            'approval.escalated' => env('WHATSAPP_TEMPLATE_APPROVAL_ESCALATED'),
+            'ar.dunning' => env('WHATSAPP_TEMPLATE_AR_DUNNING'),
+            'backup.stale' => env('WHATSAPP_TEMPLATE_BACKUP_STALE'),
+            'scheduler.down' => env('WHATSAPP_TEMPLATE_SCHEDULER_DOWN'),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Web push (P-3e, T3e.1) — SEMUA dari .env, KOSONG di repo
+    |--------------------------------------------------------------------------
+    | Web Push standar (RFC 8030/8291/8292), bukan FCM: tidak ada SDK Firebase
+    | dan tidak ada ketergantungan pada Google. Endpoint `fcm.googleapis.com`
+    | tetap bisa muncul di tabel langganan karena CHROME yang memilihnya
+    | sendiri sebagai layanan push-nya — kita hanya mem-POST ke alamat yang
+    | diberikan peramban.
+    |
+    | vapid_private_key adalah RAHASIA. Ia hanya di .env, tidak pernah di
+    | core_settings, jawaban API, kolom error, log, atau layar; satu-satunya
+    | pembacanya adalah Core\Support\WebPushSetup, yang tidak punya satu pun
+    | getter publik untuknya (WebPushSetup::auth() menyerahkannya langsung ke
+    | pustaka pengirim). vapid_public_key sebaliknya MEMANG publik: peramban
+    | membutuhkannya sebagai applicationServerKey saat berlangganan.
+    |
+    | MENGGANTI SEPASANG KUNCI MEMBATALKAN SELURUH LANGGANAN YANG ADA:
+    | applicationServerKey terikat pada langganan, jadi setiap perangkat harus
+    | menekan "Aktifkan" lagi. Lihat DEPLOYMENT.md §11.3.
+    |
+    | subject = mailto: atau https: milik pemilik, dikirim di header VAPID
+    | supaya layanan push punya siapa yang dihubungi bila pengiriman kami
+    | bermasalah (RFC 8292 §2.1). Kosong = kanal belum dikonfigurasi.
+    */
+    'push' => [
+        'vapid_public_key' => env('VAPID_PUBLIC_KEY'),
+        'vapid_private_key' => env('VAPID_PRIVATE_KEY'),
+        'vapid_subject' => env('VAPID_SUBJECT'),
+        // Detik. Layanan push menyimpan pesan yang perangkatnya sedang mati
+        // selama TTL ini lalu membuangnya; 24 jam adalah umur wajar sebuah
+        // alarm operasional — yang lebih tua sudah dibaca di kotak masuk.
+        'ttl_seconds' => 86400,
+        'timeout_seconds' => 15,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Akun jurnal otomatis (perpetual persediaan & hutang usaha)
+    |--------------------------------------------------------------------------
+    | COA codes StockService posts GRN, material issue and opname journals to,
+    | and that ApBillService uses when a vendor bill is approved. Every code must
+    | exist in the chart of accounts and be postable.
+    |
+    | Every ACCOUNT key below is read at runtime through Modules\Core\Support\Erp
+    | and is therefore registered in SettingService::definitions()['accounting'],
+    | and the reverse holds too; that two-way contract is spelled out in the
+    | registry itself. accounting.perpetual_inventory is the one deliberate
+    | exception — read at runtime, never editable — for the reason set out on it.
+    */
+    'accounting' => [
+        /*
+         * INVENTORY ACCOUNTING METHOD — an install-time election, not a preference.
+         *
+         * true  => perpetual. Every stock movement posts to the general ledger:
+         *          a receipt debits persediaan (1-1400) against a clearing
+         *          liability, an issue credits persediaan and debits project
+         *          cost. Material becomes an expense when it is CONSUMED.
+         * false => periodic. Stock is tracked in quantity only, no stock
+         *          movement touches the ledger, and material becomes an expense
+         *          when the VENDOR BILL is approved.
+         *
+         * This is not a setting and must not become one again. It elects an
+         * accounting method, and the two methods disagree about where the value
+         * of on-hand stock lives, so changing it once documents exist corrupts
+         * the ledger in whichever direction it is changed. Measured on this
+         * codebase, on one purchase of Rp 6.200.000:
+         *
+         *   on at receipt, off later   1-1400 keeps 6.200.000 against a stock
+         *       sub-ledger of 0,00, while 5-1100 and the project realisasi both
+         *       stay 0,00: the material is expensed nowhere, ever, because the
+         *       issue that would have relieved 1-1400 no longer posts.
+         *   off at receipt, on later   the bill already expensed the purchase to
+         *       5-1100; the issue then debits 5-1100 a second time and credits a
+         *       persediaan account that was never debited, giving 5-1100 =
+         *       12.400.000 for a 6.200.000 purchase and 1-1400 = -6.200.000.
+         *
+         * Neither outcome is a defect the engine can prevent: each posting was
+         * correct under the method in force when it was made. What a change of
+         * method actually requires is a STOCK REVALUATION on one side of it —
+         * capitalising stock that was expensed, or expensing stock that was
+         * capitalised — booked at a fiscal-period boundary. That is an
+         * accountant's judgement and an accountant's journal. Nothing in this
+         * application does it for you, and nothing here pretends to.
+         *
+         * BEFORE editing this value, run
+         *
+         *     php artisan erp:inventory-method-check
+         *
+         * It reports what a change would break right now — goods receipts whose
+         * recorded GR/IR or accrual credit no vendor bill has cleared yet, stock
+         * movements already posted inside an open fiscal period, and stock on
+         * hand still carrying value — and exits non-zero while any of those
+         * holds. It only reports; it never migrates anything.
+         *
+         * Upgrade note: an installation that stored an override for this key
+         * while it was still on the settings screen still has that row in
+         * core_settings, and the resolver still honours it. That is deliberate —
+         * upgrading must not silently switch a company's accounting method.
+         * SettingService::invalidOverrides() and the command above both report
+         * such a row; move its value here, then delete the row.
+         */
+        'perpetual_inventory' => true,
+
+        'inventory_account' => '1-1400',       // Persediaan Material
+        'grn_clearing_account' => '2-1150',    // Penerimaan Barang Belum Ditagih (GR/IR)
+        'stock_variance_account' => '6-4400',  // Selisih Persediaan (opname/rusak/hilang)
+
+        // Penerimaan tanpa PO tidak punya dokumen tagihan untuk mengosongkan GR/IR,
+        // jadi diakru terpisah dan diselesaikan lewat tagihan manual / jurnal.
+        'receipt_accrual_account' => '2-1600', // Beban Yang Masih Harus Dibayar
+
+        // Selisih antara nilai barang yang benar-benar diterima (harga GRN) dan
+        // nilai yang ditagih vendor (harga PO) pada pencocokan tiga arah.
+        'purchase_variance_account' => '6-4500', // Selisih Harga Pembelian
+
+        // Uang muka pembelian (DP 20-30% atas PO material adalah termin paling
+        // umum di konstruksi). Tagihan uang muka mendebit akun aset ini; tagihan
+        // final mengkreditkannya kembali dan hanya mengakui sisa hutangnya.
+        // Dibaca ApBillService saat tagihan disetujui.
+        'purchase_advance_account' => '1-1500', // Uang Muka Proyek
+
+        /*
+         * Counter-entry for stock that is already on hand when the system goes
+         * live, and for any later receipt with NO purchase order and NO vendor
+         * (found stock, a return from site).
+         *
+         * Such a receipt is not a purchase: no counterparty, no liability, no
+         * profit-and-loss event. It therefore belongs to none of the three
+         * credit routes the receipt engine has for a delivery — 2-1150 GR/IR,
+         * 2-1600 accrual, 6-4400 selisih persediaan. Crediting 6-4400 reports the
+         * whole of a company's opening stock as operating income in its go-live
+         * year. The counter-entry of an opening balance is equity.
+         *
+         * 3-3100 is an intermediate equity account: it collects the counter-entry
+         * of every opening balance while data migration runs, and is then closed
+         * once to 3-1100 Modal Disetor / 3-2100 Laba Ditahan by an accountant —
+         * a split only a human can decide, not a seeder and not a migration.
+         *
+         * Read by the receipt engine when a receipt has no counterparty, and by
+         * InventoryDatabaseSeeder and the opening-balance data migration, so it
+         * is registered on the settings screen like every other account here.
+         */
+        'opening_balance_account' => '3-3100', // Saldo Awal (ekuitas)
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Pengadaan
+    |--------------------------------------------------------------------------
+    | evaluation_threshold — PO dengan total >= nilai ini dianggap "besar":
+    | menutupnya (manual maupun otomatis saat terima penuh) memicu ajakan
+    | mengisi evaluasi vendor — pesan penutupan + notifikasi ke pemegang
+    | prc.create — bila vendornya belum dievaluasi 6 bulan terakhir. Default
+    | disamakan dengan ambang persetujuan direktur PO di bawah: pembelian yang
+    | cukup besar untuk butuh direktur cukup besar pula untuk berutang
+    | evaluasi. Dibaca VendorEvaluationService::promptEvaluationIfDue dengan
+    | default yang sama bila kunci ini absen.
+    |
+    | (Blok 'procurement' duplikat yang hanya memuat evaluation_threshold sudah
+    | dihapus: PHP hanya menyimpan kemunculan terakhir sebuah kunci larik, jadi
+    | blok pertama itu diam-diam terbuang — footgun laten pra-P2 yang ditutup.)
+    |--------------------------------------------------------------------------
+    | evaluation_threshold — PO dengan total >= nilai ini dianggap "besar":
+    | menutupnya (manual maupun otomatis saat terima penuh) memicu ajakan
+    | mengisi evaluasi vendor — pesan penutupan + notifikasi ke pemegang
+    | prc.create — bila vendornya belum dievaluasi 6 bulan terakhir. Default
+    | disamakan dengan ambang persetujuan direktur PO di bawah: pembelian yang
+    | cukup besar untuk butuh direktur cukup besar pula untuk berutang
+    | evaluasi. Dibaca VendorEvaluationService::promptEvaluationIfDue dengan
+    | default yang sama bila kunci ini absen.
+    */
+    'procurement' => [
+        'evaluation_threshold' => 100000000,
+
+        /*
+         * P2 — bobot penilaian penawaran berbobot (sistem nilai DAN 4.8).
+         *
+         * Lima aspek, bobot dalam PERSEN, JUMLAH WAJIB 100. Validasi jumlah
+         * dilakukan SAAT BOOT (ProcurementServiceProvider memanggil
+         * Procurement\Support\BidWeights::assertValidConfig, yang melempar
+         * BidWeightConfigException) — config yang salah bobot tidak boleh sampai
+         * ke tabulasi bertanda tangan. Skor harga TIDAK diinput: dihitung dari
+         * rasio harga penawaran terhadap RAB (BidEvaluationService::hargaScore);
+         * empat aspek lain (mutu, waktu, keuangan, k3) diinput 0–100 per vendor.
+         */
+        'bid_weights' => [
+            'harga' => 50,
+            'mutu' => 30,
+            'waktu' => 5,
+            'keuangan' => 10,
+            'k3' => 5,
+        ],
+
+        /*
+         * Kendali harga PO (temuan #34 tahap 2): baris PO ber-boq_item_id yang
+         * harga satuannya melampaui harga BOQ beku lebih dari persen ini
+         * memicu 422 konfirmasi-lanjut saat PO diajukan (PriceDeviationService).
+         * Peringatan yang wajib diakui, bukan blokir.
+         */
+        'price_warning_pct' => 10,
+
+        /*
+         * Gate anggaran (temuan #33): perilaku saat DPP PO/SPK yang diajukan
+         * melampaui sisa RAP (= anggaran - realisasi - komitmen berjalan; PO
+         * diadu dengan sisi non-subkon RAP, SPK dengan sisi subkon).
+         *   'warn'  (bawaan) wajib konfirmasi eksplisit pengaju;
+         *   'block' 422 keras, konfirmasi tidak menolong;
+         *   'off'   gate mati.
+         * Nilai tak dikenal diperlakukan 'warn' oleh BudgetGateService — salah
+         * ketik kebijakan tidak boleh diam-diam mematikan gate.
+         */
+        'budget_gate' => 'warn',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Ambang peringatan registri WatchedThresholds (F-2)
+    |--------------------------------------------------------------------------
+    |
+    | Persen dari BATAS tempat sebuah baris berubah dari "aman" menjadi
+    | "mendekati batas". 90 % adalah rekomendasi yang diterima pemilik
+    | (ROADMAP-HASHMICRO §5 baris 13); satu kunci per entri registri supaya
+    | anggaran proyek dan anggaran overhead bisa berbeda tanpa menyentuh kode.
+    |
+    | Ini PERINGATAN, bukan gerbang: tidak ada satu dokumen pun yang ditolak
+    | karena angka di blok ini. Yang menolak PO/SPK yang menjebol RAP tetap
+    | procurement.budget_gate di atas, dengan kalimatnya sendiri.
+    |
+    | Nilai bukan-angka dibaca sebagai 90 — salah ketik tidak boleh diam-diam
+    | mematikan peringatannya (kebiasaan yang sama dengan budget_gate).
+    */
+    'thresholds' => [
+        'project_budget_pct' => 90,
+        'rap_vs_kontrak_pct' => 90,
+        'overhead_budget_pct' => 90,
+
+        /*
+         * F-7 — DAN YANG INI BUKAN PERSEN: berapa JAM sebelum target servis
+         * sebuah alat mulai diperingatkan. Persentase tidak bisa dipakai pada
+         * meter kumulatif (meterannya tidak pernah mulai dari nol pada servis
+         * terakhir), jadi 90 % pada alat 3.500 jam menyala 350 jam lebih awal
+         * dan pada alat 12.250 jam menyala 1.225 jam lebih awal — dari satu
+         * angka yang sama. 50 jam kira-kira lima sampai enam hari kerja alat
+         * berat, cukup untuk memesan sparepart dan menjadwalkan mekanik, dan
+         * sama panjangnya untuk alat baru maupun alat tua.
+         */
+        'maintenance_hour_meter' => 50,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Paket tender (P7)
+    |--------------------------------------------------------------------------
+    |
+    | TEMPLATE CHECKLIST KELENGKAPAN — dan mengapa ia di sini, bukan di tabel
+    | dan bukan di core_settings.
+    |
+    | Tiga tempat dipertimbangkan. Sebuah TABEL menuntut CRUD, izin, seeder,
+    | layar, dan satu layar lagi untuk versinya — semua itu demi daftar yang
+    | berubah kira-kira sekali setahun. Sebuah baris `core_settings` membuatnya
+    | dapat disunting lewat formulir web tanpa struktur: checklist yang bisa
+    | dipendekkan diam-diam oleh siapa pun berhenti berarti "kelengkapan", dan
+    | itu justru satu-satunya hal yang harus dijaga oleh sebuah daftar periksa.
+    | Di config, template ini adalah KONSTANTA PASANG — masuk git, terbaca di
+    | diff, ditinjau seperti mask penomoran di atasnya.
+    |
+    | Yang DISIMPAN di `crm_tender_packages.checklist` bukan template ini,
+    | melainkan SNAPSHOT-nya: label dan grup ikut tersimpan bersama centangnya,
+    | sehingga menyunting template di sini tidak pernah menulis ulang checklist
+    | paket yang sudah diisi dan ditandatangani. Kunci yang tidak dikenal
+    | template ditolak 422 — daftar periksa yang bisa menambah butirnya sendiri
+    | saat diisi bukan daftar periksa.
+    |
+    | Butirnya adalah praktik rumah, bukan kutipan peraturan: apa yang biasa
+    | diminta satu dokumen lelang jasa konstruksi. Menambah/mengurangi butir
+    | adalah keputusan pemilik, dan tempatnya persis di sini.
+    */
+    'tender' => [
+        /*
+         * Ambang CAKUPAN BIAYA satu baris lembar TKDN (persen dari nilai baris
+         * penawaran itu sendiri).
+         *
+         * Uji keberadaan pernah dikalahkan dengan Rp 1: satu baris biaya Rp 1
+         * pada baris penawaran Rp 100 juta membuat lembarnya menyatakan cakupan
+         * 100% dan "dinilai penuh". Baris yang uraian biayanya tidak mencapai
+         * sekian persen dari nilai barisnya berstatus "dinilai sebagian" —
+         * persennya tetap dihitung dan tetap tampil, tetapi lembarnya TIDAK
+         * boleh menyebut dirinya dinilai penuh dan nilai barisnya tidak masuk
+         * cakupan.
+         *
+         * ANGKA INI ADALAH ANGKA RUMAH, BUKAN ANGKA PERMEN. Permenperin
+         * 35/2025 tidak menyebut pecahan apa pun antara biaya dan nilai
+         * penawaran — Pasal 14 berbicara tentang biaya keseluruhan, dan harga
+         * penawaran memuat margin yang besarnya tidak diketahui peraturan
+         * mana pun. Karena itu ambang ini MENGUNGKAPKAN, tidak pernah menolak:
+         * baris di bawahnya tetap tersimpan. Preseden bentuknya
+         * `projects.cpi_coverage_min_pct`, yang lahir dari cacat yang sama.
+         *
+         * Sengaja TIDAK ada di layar Pengaturan: ambang pengungkapan yang bisa
+         * diturunkan ke 0 lewat formulir web berhenti berarti "cakupan" —
+         * alasan yang sama yang menahan checklist_template di bawah ini.
+         */
+        'tkdn_min_cost_to_value_pct' => 50.0,
+
+        'checklist_template' => [
+            ['key' => 'surat_penawaran', 'group' => 'administrasi', 'label' => 'Surat penawaran bermeterai'],
+            ['key' => 'surat_kuasa', 'group' => 'administrasi', 'label' => 'Surat kuasa (bila ditandatangani penerima kuasa)'],
+            ['key' => 'jaminan_penawaran', 'group' => 'administrasi', 'label' => 'Jaminan penawaran'],
+            ['key' => 'pakta_integritas', 'group' => 'administrasi', 'label' => 'Pakta integritas'],
+            ['key' => 'formulir_kualifikasi', 'group' => 'administrasi', 'label' => 'Formulir isian kualifikasi'],
+            ['key' => 'akta_perusahaan', 'group' => 'kualifikasi', 'label' => 'Akta pendirian dan perubahan terakhir'],
+            ['key' => 'izin_usaha', 'group' => 'kualifikasi', 'label' => 'NIB / izin usaha'],
+            ['key' => 'sbu', 'group' => 'kualifikasi', 'label' => 'Sertifikat Badan Usaha (SBU)'],
+            ['key' => 'npwp_spt', 'group' => 'kualifikasi', 'label' => 'NPWP dan SPT tahunan terakhir'],
+            ['key' => 'neraca', 'group' => 'kualifikasi', 'label' => 'Neraca keuangan / laporan keuangan'],
+            ['key' => 'pengalaman', 'group' => 'kualifikasi', 'label' => 'Daftar pengalaman pekerjaan sejenis'],
+            ['key' => 'metode_pelaksanaan', 'group' => 'teknis', 'label' => 'Metode pelaksanaan'],
+            ['key' => 'jadwal_pelaksanaan', 'group' => 'teknis', 'label' => 'Jadwal dan waktu pelaksanaan'],
+            ['key' => 'daftar_personil', 'group' => 'teknis', 'label' => 'Daftar personil inti'],
+            ['key' => 'daftar_peralatan', 'group' => 'teknis', 'label' => 'Daftar peralatan utama'],
+            ['key' => 'rkk', 'group' => 'teknis', 'label' => 'Rencana Keselamatan Konstruksi (RKK)'],
+            ['key' => 'daftar_subkontraktor', 'group' => 'teknis', 'label' => 'Daftar bagian pekerjaan yang disubkontrakkan'],
+            ['key' => 'daftar_kuantitas_harga', 'group' => 'harga', 'label' => 'Daftar kuantitas dan harga (BoQ)'],
+            ['key' => 'analisa_harga_satuan', 'group' => 'harga', 'label' => 'Analisa harga satuan pekerjaan (AHSP)'],
+            ['key' => 'daftar_upah_bahan_alat', 'group' => 'harga', 'label' => 'Daftar harga upah, bahan, dan peralatan'],
+            ['key' => 'formulir_tkdn', 'group' => 'harga', 'label' => 'Formulir penghitungan TKDN'],
+        ],
+    ],
+
+    'approvals' => [
+        // Documents at or above this amount need a second (direktur) approval.
+        //
+        // PO and SPK keep the ORIGINAL two-level mechanism (needs_director_approval
+        // stamped on submit + Procurement\Support\DirectorApproval enforced in
+        // PoService/SubcontractService::approve): one approval, but at/above the
+        // threshold that approval must be a prc/scm.approve-director holder, and
+        // maker-checker still forbids the submitter. That mechanism ships unchanged
+        // — every PurchaseOrderDirectorApprovalTest / SubcontractDirectorApprovalTest
+        // assertion stays meaningful — so these two keys are LEFT AS THEY WERE.
+        //
+        // TANPA KUNCI `mode`, dan itu perbaikan putaran kedua verifikasi F-1.
+        // Kuncinya dulu ada di sini dengan alasan "supaya layar punya bawaan
+        // untuk dibaca dan direset" — layar tidak pernah menggambar sel mode
+        // untuk kedua baris ini (SettingService::approvalMatrixGroup melewati
+        // baris yang modeIsLocked), dan ApprovalPolicy::forType MEMAKSA
+        // single_director untuk keduanya apa pun isi config. Sebuah kunci yang
+        // dibaca lalu dibuang bukan bawaan; ia membuat endpoint setelan
+        // menjawab "ditetapkan saat instalasi … membutuhkan deploy" untuk
+        // sesuatu yang tidak dapat diubah deploy mana pun.
+        'purchase_order' => [
+            'threshold_two_level' => 100000000,
+        ],
+        'subcontract' => [
+            'threshold_two_level' => 200000000,
+        ],
+
+        /*
+         * P2 — n-level approval ladder (generalised shared mechanism).
+         *
+         * A document type listed here opts into Core\Traits\Approvable's n-level
+         * path: Approvable::requiredLevels() resolves the amount against this
+         * ladder (Core\Support\ApprovalLevels), approve() records one 'approved'
+         * row per DISTINCT user, and the document flips to 'approved' only when the
+         * required number of distinct approvers is reached. Levels 2 and above
+         * additionally require the module's <prefix>.approve-director permission —
+         * this is what keeps the director right meaningful under the new counter,
+         * exactly as DirectorApproval kept it for PO/SPK.
+         *
+         * Bracket semantics match the historical threshold: `to` is the EXCLUSIVE
+         * upper bound of a bracket, so an amount AT the boundary falls into the
+         * next (higher) bracket — an award of exactly Rp 100 juta needs 2 levels,
+         * the same >= reading PO/SPK have always used at their own thresholds.
+         *
+         *   < Rp 100 juta         1 level  (any prc.approve holder)
+         *   Rp 100 juta – 1 M     2 levels (2nd from a prc.approve-director holder)
+         *   >= Rp 1 miliar        3 levels (2nd & 3rd from prc.approve-director)
+         */
+        'award_decision' => [
+            'ladder' => [
+                ['to' => 100000000, 'levels' => 1],
+                ['to' => 1000000000, 'levels' => 2],
+                ['to' => null, 'levels' => 3],
+            ],
+
+            /*
+             * F-1 — jenjang yang SAMA, ditulis dalam kosakata matriks
+             * (ambang / mode / ambang tingkat-3). Bukan sumber kebenaran
+             * kedua: ApprovalPolicyEquivalenceTest menghitung keduanya pada
+             * enam nilai di sekitar tiap batas dan menuntut jawaban identik,
+             * jadi keduanya tidak bisa menyimpang diam-diam. Yang menegakkan
+             * sejak F-1 adalah stempel pada baris `submitted` (dihitung dari
+             * baris ini), sehingga mengubah jenjang tidak lagi mengubah
+             * tuntutan dokumen yang sudah terbang.
+             */
+            'threshold_two_level' => 100000000,
+            'mode' => 'extra_level',
+            'third_level_threshold' => 1000000000,
+        ],
+
+        /*
+        |----------------------------------------------------------------------
+        | F-1 — MATRIKS PERSETUJUAN: sebelas jenis lain yang BISA diberi ambang
+        |----------------------------------------------------------------------
+        | Registri Core\Support\ApprovableDocuments memuat 28 jenis dokumen
+        | ber-submit → approve. Tiga di antaranya punya aturan bernilai hari ini
+        | (PO, SPK dan keputusan pemenang, di atas). Sebelas lagi membawa nilai
+        | rupiah dan karena itu BISA diberi ambang oleh pemiliknya — dikirim
+        | tanpa ambang, dan itulah yang tertulis di sini.
+        |
+        | null, bukan 0. Nol berarti "setiap dokumen menuntut direktur" —
+        | kebalikan persis keadaannya, dan satu-satunya angka yang bisa
+        | mengubah siapa boleh menyetujui apa tanpa seorang pun mengetiknya.
+        | Layar merender null sebagai "Tanpa ambang", bukan sebagai Rp 0.
+        |
+        | Barisnya dituliskan SATU PER SATU dan bukan dibangkitkan dari
+        | registri: berkas ini adalah lembar jawaban OQ-4 — apa yang berlaku
+        | hari ini per jenis dokumen — dan lembar jawaban yang harus dijalankan
+        | dulu untuk dibaca bukan lembar jawaban.
+        |
+        | SATU AMBANG, TANPA `mode` DAN TANPA `third_level_threshold`.
+        | Ketiga kunci itu dulu ada di setiap baris. Putaran pertama verifikasi
+        | F-1 mencabut sel mode dari layar untuk sebelas baris ini (menyalakan
+        | "tambahan tingkat" pada invoice termin memposting jurnal Rp 2,22
+        | miliar dua kali — lihat ApprovalPolicy::supportsExtraLevel), tetapi
+        | meninggalkan kuncinya di sini. Diukur pada putaran kedua: 26 kunci
+        | pada 13 jenis yang forType() PAKSA menjadi single_director apa pun
+        | isinya — dibaca, lalu dibuang. Harganya bukan sekadar berkas yang
+        | lebih panjang: karena config mendefinisikan kunci yang tidak lagi
+        | digambarkan registri, endpoint setelan menjawab "ditetapkan saat
+        | instalasi di config/erp.php … mengubahnya membutuhkan deploy" —
+        | menyuruh operatornya melakukan deploy yang tidak mengubah apa pun.
+        | Sekarang kunci mode ada tepat pada jenis yang resolvernya membacanya
+        | (satu: keputusan pemenang), dan penolakannya menyebut sebab yang
+        | sebenarnya. Lihat WithdrawnApprovalModeKeysTest.
+        |
+        | DUA JENIS BARIS SENGAJA TIDAK ADA DI SINI.
+        |
+        | (1) Tiga belas jenis TANPA KOLOM NILAI apa pun — izin kerja lapangan,
+        |     izin lembur, izin masuk/keluar material, BAST, baseline proyek,
+        |     opname progres owner, IPP, inspeksi mutu, pekerjaan tambah-kurang,
+        |     permintaan pembelian, penyesuaian stok, BAST subkon dan pengajuan
+        |     cuti. Sebuah izin kerja lapangan tidak berharga rupiah, jadi
+        |     ambang tidak punya apa pun untuk diukur; menawarkan kotak isian di
+        |     sana berarti menawarkan kendali yang tidak akan pernah berbunyi.
+        |     Layar mencetak aturannya. Lihat ApprovalPolicy::hasMeasurableAmount.
+        |
+        | (2) Addendum SPK (subcontract_addendum): ia menghitung
+        |     needs_director_approval-nya terhadap ambang SPK
+        |     (SubcontractAddendum::submit → Subcontract::directorApprovalThreshold),
+        |     jadi barisnya di layar memantul ke baris SPK dan ditandai
+        |     "mengikuti". Kunci sendiri untuknya berarti sel yang bisa diedit
+        |     dan tidak ada yang membacanya. Lihat ApprovalPolicy::FOLLOWS.
+        */
+        'quotation' => ['threshold_two_level' => null],
+        'boq' => ['threshold_two_level' => null],
+        'cost_budget' => ['threshold_two_level' => null],
+        'work_order' => ['threshold_two_level' => null],
+        'progress_claim' => ['threshold_two_level' => null],
+        'labor_contract' => ['threshold_two_level' => null],
+        'labor_claim' => ['threshold_two_level' => null],
+        'ar_invoice' => ['threshold_two_level' => null],
+        'ap_bill' => ['threshold_two_level' => null],
+        'payment' => ['threshold_two_level' => null],
+        'payroll_run' => ['threshold_two_level' => null],
+        // F-2 — Anggaran overhead (OVB). Membawa kolom nilai rupiah
+        // (total_amount), jadi ambangnya BISA diisi pemilik; dikirim kosong
+        // seperti empat belas baris lain, supaya memasang OVB tidak mengubah
+        // satu pun keputusan persetujuan.
+        'overhead_budget' => ['threshold_two_level' => null],
+
+        /*
+         * F-1 — SETUJUI MASSAL. Kosong = fitur MATI, dan itulah bawaannya:
+         * menyetujui banyak dokumen dengan satu klik adalah kemudahan yang
+         * hanya boleh ada bila pemilik memintanya. Diisi = berapa banyak
+         * dokumen boleh dipilih sekaligus. Loopnya di KLIEN dan memanggil
+         * endpoint approve tiap modul satu per satu, jadi tidak ada satu pun
+         * penjaga, notifikasi atau service modul yang dilewati.
+         */
+        'batch_cap' => null,
+
+        /*
+         * MAKER-CHECKER. Refuse an approval by the same person who submitted
+         * the document — vendor bills, termin invoices, PO, SPK, opname,
+         * payroll, and outgoing payments alike.
+         *
+         * Shipped ENFORCED, because the alternative is what the demo dataset
+         * shows: one `finance` login could raise BIL/2026/III/0001 for
+         * Rp 232.545.000 to a vendor of its own choosing, approve it, and pay
+         * it — four clicks, and the approval trail it leaves reads exactly like
+         * a properly approved bill.
+         *
+         * Turn it off only where the company genuinely has fewer people than it
+         * has duties. Doing so hides nothing: core_approvals still records both
+         * the submitted and the approved row, so a self-approval stays findable
+         * afterwards with a single self-join whichever way this is set.
+         */
+        // Umur antrean persetujuan sebelum erp:approval-watch mengingatkan lagi
+        // (hari); dua kalinya = eskalasi ke direktur. Lihat SettingService.
+        'aging_days' => 5,
+        'segregation_of_duties' => true,
+    ],
+];

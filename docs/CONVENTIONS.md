@@ -1,0 +1,2922 @@
+# Module Conventions (BINDING CONTRACT)
+
+Every module MUST follow this document exactly. Auditors reject deviations.
+
+## 1. Module layout & wiring
+
+```
+Modules/<Name>/
+  Database/Migrations/            # anonymous migration classes
+  Database/Seeders/<Name>DatabaseSeeder.php   # + helper seeders it calls
+  Enums/                          # PHP 8 string-backed enums
+  Http/Controllers/               # thin controllers extending Modules\Core\Http\ApiController
+  Http/Requests/                  # FormRequest per create/update
+  Http/Resources/                 # JsonResource for main aggregates
+  Models/                         # extend Modules\Core\Models\BaseModel
+  Providers/<Name>ServiceProvider.php  # EXACTLY ONE provider, this name
+  Routes/api.php
+  Services/                       # business logic lives here, controllers stay thin
+```
+
+- Namespace root: `Modules\<Name>\` maps to `Modules/<Name>/` (PSR-4, already in composer.json).
+- Modules are auto-discovered by `bootstrap/providers.php` — never edit shared files
+  (`bootstrap/*`, `composer.json`, `database/seeders/DatabaseSeeder.php`, `routes/*`).
+- The provider boots exactly:
+  ```php
+  public function boot(): void
+  {
+      $this->loadMigrationsFrom(__DIR__.'/../Database/Migrations');
+      Route::middleware('api')
+          ->prefix('api/<route-prefix>')
+          ->group(__DIR__.'/../Routes/api.php');
+  }
+  ```
+- Console commands (if any) are registered in the same provider via `$this->commands([...])`.
+
+## 2. Module registry
+
+| Module      | Route prefix       | Table prefix | Migration block (2026_07_25_0xxxxx) |
+|-------------|--------------------|--------------|--------------------------------------|
+| Core        | `api/core`         | `core_`      | 000100–000199 |
+| Iam         | `api/iam`          | (spatie)     | 000200–000299 |
+| Crm         | `api/crm`          | `crm_`       | 000300–000399 |
+| Inventory   | `api/inventory`    | `inv_`       | 000400–000499 |
+| Assets      | `api/assets`       | `ast_`       | 000500–000599 |
+| Estimation  | `api/estimation`   | `est_`       | 000600–000699 |
+| Projects    | `api/projects`     | `prj_`       | 000700–000799 |
+| Procurement | `api/procurement`  | `prc_`       | 000800–000899 |
+| Subcontract | `api/subcontract`  | `scm_`       | 000900–000999 |
+| HrPayroll   | `api/hr`           | `hr_`        | 001000–001099 |
+| Finance     | `api/finance`      | `fin_`       | 001100–001199 |
+| ServiceDesk | `api/servicedesk`  | `svc_`       | 001200–001299 |
+| Engineering | `api/engineering`  | `eng_`       | 001300–001399 |
+| Quality     | `api/quality`      | `qc_`        | 001400–001499 |
+
+**Blok lanjutan** (F-2, 7 Sep 2026; Inventory ditambahkan F-6, 8 Sep 2026). Blok pertama sebuah
+modul bisa habis, dan tiga di antaranya sudah: Projects memakai 000799 pada 9 Agustus 2026,
+Finance memakai 001199 pada 25 Juli 2026, dan Inventory memakai kesepuluh slot puluhannya
+(000400…000490, ditambah luapan 000491 dan 000495–000499) pada 30 Agustus 2026.
+Pemilik menyetujui rentang lanjutan Finance dan Projects (ROADMAP-HASHMICRO §5 baris 5), dan
+**tabel di bawah ini — bukan prosa mana pun — adalah sumber kebenaran rentang blok:**
+
+| Module      | Blok pertama  | Blok lanjutan | Status |
+|-------------|---------------|---------------|--------|
+| Finance     | 001100–001199 | **001500–001599** | DIPAKAI — `2026_09_07_001500_create_fin_overhead_budget_tables.php` (F-2), `2026_09_07_001501_add_cancellation_to_fin_overhead_budgets_table.php` (putaran verifikasi F-2), `2026_09_12_001502_add_import_preset_to_fin_bank_accounts_table.php` dan `2026_09_12_001503_create_fin_bank_inbox_files_table.php` (P-3c) |
+| Projects    | 000700–000799 | **001600–001699** | DIDAFTARKAN, belum dipakai — F-2 tidak butuh migrasi Projects |
+| Inventory   | 000400–000499 | **001700–001799** | DIPAKAI — `2026_09_08_001700_create_inv_reorder_rules_table.php` (F-6) |
+| Core        | 000100–000199 | **001800–001899** | DIPAKAI — `2026_09_09_001800_add_valid_until_to_core_attachments_table.php` (F-8); `2026_09_11_001801_add_template_to_core_notifications_table.php` dan `2026_09_11_001802_add_provider_status_to_core_notification_deliveries_table.php` (P-3a); `2026_09_12_001803_create_core_webhook_tables.php` (P-3d); `2026_09_13_001804_create_core_push_subscriptions_table.php` dan `2026_09_13_001805_add_push_subscription_to_core_notification_deliveries_table.php` (P-3e) |
+
+Rentang Inventory 001700–001799 **belum ada di ledger pemilik** (ROADMAP-HASHMICRO §5 baris 5
+menyebut Core, Finance dan Projects saja). Ia ditetapkan di sini karena aturan di bawah menuntut
+penetapannya pada commit pemakaian pertama dan F-6 membutuhkannya; 001700–001799 dipilih karena
+ia rentang seratusan bebas pertama sesudah Projects (nomor ≥ 001400 yang terpakai hanya
+001400/001410/001420/001430/001440/001450/001500/001501). Baris ini adalah usulan yang menunggu
+pengesahan pemilik ke dalam ledger, bukan pengganti ledgernya.
+
+Core (000100–000199) habis pada 7 September 2026 (F-1 memakai 000198 dan 000199), dan
+**F-8 adalah paket pertama yang butuh migrasi Core sesudah itu** — jadi barisnya ditetapkan
+di tabel di atas pada commit pemakaian pertamanya, 9 September 2026, sesuai aturan di bawah.
+Rentang yang dipakai: **001800–001899**. **JANGAN memakai 001400–001499 untuk Core**, meski
+ledger pemilik (ROADMAP-HASHMICRO §5 baris 5) menuliskan "Core 001400–?": rentang itu adalah
+blok PERTAMA Quality pada tabel di atas, dan ia sudah berisi enam migrasi (001400/001410/
+001420/001430/001440/001450). 001800–001899 dipilih karena ia rentang seratusan bebas pertama
+sesudah Inventory (nomor ≥ 001400 yang terpakai pada 9 Sep 2026 hanya 001400/001410/001420/
+001430/001440/001450/001500/001501/001700). Seperti baris Inventory, baris Core ini adalah
+usulan yang menunggu pengesahan pemilik ke dalam ledger — bukan pengganti ledgernya.
+Aturan itu berlaku untuk setiap blok lanjutan: didaftarkan **di tabel ini** pada
+commit yang pertama kali memakainya, tidak pernah lebih dulu dan tidak pernah belakangan.
+
+Migration filenames: `2026_07_25_000710_create_prj_wbs_tasks_table.php` (increment by 10
+inside your block). Never use another module's block.
+
+## 3. Shared-ID contract (cross-module references)
+
+Canonical owner tables. Reference them with EXACTLY these column names:
+
+| Column          | Points to             | Owner       |
+|-----------------|-----------------------|-------------|
+| `user_id`       | `users.id`            | app/Iam     |
+| `employee_id`   | `hr_employees.id`     | HrPayroll   |
+| `customer_id`   | `crm_customers.id`    | Crm         |
+| `contract_id`   | `crm_contracts.id`    | Crm         |
+| `vendor_id`     | `prc_vendors.id`      | Procurement (subcontractors are vendors with `is_subcontractor = true`) |
+| `project_id`    | `prj_projects.id`     | Projects    |
+| `boq_id` / `boq_item_id` | `est_boqs.id` / `est_boq_items.id` | Estimation |
+| `item_id`       | `inv_items.id`        | Inventory   |
+| `warehouse_id`  | `inv_warehouses.id`   | Inventory   |
+| `account_id`    | `fin_accounts.id`     | Finance     |
+| `asset_id`      | `ast_assets.id`       | Assets      |
+| `service_contract_id` | `svc_contracts.id` | ServiceDesk |
+
+**FK rule:** INSIDE your own module use `foreignId(...)->constrained(...)`. ACROSS modules
+use `$table->unsignedBigInteger('project_id')->nullable(); $table->index('project_id');`
+— indexed, but NO database constraint (keeps modules decoupled and migration order free).
+Cross-module Eloquent relations (belongsTo another module's model) ARE allowed and encouraged.
+
+## 4. Data types & casts
+
+- Money: `$table->decimal('amount', 18, 2)` — IDR. Cast `'amount' => 'decimal:2'`.
+- Percentages/rates: `decimal(8, 4)`. Quantities: `decimal(15, 3)`.
+- Dates `date`, timestamps `dateTime`. Always `$table->timestamps();` plus `softDeletes()`
+  on master data and document headers (not on line/detail tables).
+- Status columns: `$table->string('status', 30)->default('draft');` cast to an enum.
+- Every document header has `code` (`$table->string('code', 40)->unique();`) filled by
+  the numbering trait (section 6).
+
+## 5. Base classes (Modules/Core — READ THE SOURCE FIRST)
+
+- Models extend `Modules\Core\Models\BaseModel` (`$guarded = []`).
+- Controllers extend `Modules\Core\Http\ApiController`; respond with
+  `$this->ok($data, $message?)`, `$this->created($data)`, `$this->error($msg, $status)`.
+  Lists: `return $this->ok(SomeResource::collection($query->paginate($request->integer('per_page', 20))));`
+- Generic document status enum: `Modules\Core\Enums\DocumentStatus`
+  (`draft, submitted, approved, rejected, closed, cancelled`). Add module-specific enums
+  only for genuinely different lifecycles (e.g. ticket status).
+- Approval flow: use trait `Modules\Core\Traits\Approvable` (gives `submit() / approve() / reject()`
+  + `approvals()` morph). Documents needing approval: PR, PO, SPK, claims, invoices, payroll runs,
+  BOQ versions, stock adjustments.
+- Document numbering: use trait `Modules\Core\Traits\HasDocumentNumber` and set
+  `public string $documentType = 'PO';` on the model. Type keys come from `config/erp.php`
+  → `documents`. A mask may carry `{PROJ}` (the document's project CODE; sequence then
+  runs per `(type, year, project)`) — only for types whose documents always carry a
+  project: a `{PROJ}` mask on a project-less document fails the mint loudly (P8).
+- Generic revision (P8): a document that needs Rn revisions and has no pattern of its
+  own uses trait `Modules\Core\Traits\Revisable` (columns `revision`, `superseded_at`,
+  `superseded_by_id`; a revision is a NEW row via the module service's `revise()`, the
+  predecessor keeps number/status/approval history and stays printable; guard every
+  action with `assertRevisiBerlaku()`). Documents with their own versioning pattern
+  (DrawingSubmittal, ProjectBaseline, MethodLibraryEntry, BOQ versions, quotation
+  revisions) do NOT take this trait.
+- **Setiap aturan "hanya boleh ada SATU" wajib punya jalan keluarnya sendiri** (verifikasi F-2,
+  dua putaran). Sebuah gerbang unik yang menolak baris kedua sementara baris pertama tidak bisa
+  ditarik kembali mengunci datanya selamanya — dan kalimat penolakannya menyuruh operator menekan
+  tombol yang tidak ada. Dua yang ada hari ini: `OverheadBudgetService::cancel()` (satu OVB
+  disetujui per tahun buku) dan `RapService::supersede()` (satu RAP yang mengatur per proyek).
+  Bentuknya sama: alasan WAJIB, jejak di `core_approvals`, tidak satu byte pun isi dokumennya
+  disentuh, dan jalan keluarnya DISEBUT di dalam kalimat penolakan yang menutup pintunya.
+- Helpers: `Modules\Core\Support\Terbilang::rupiah()` (amount → Indonesian words),
+  `Modules\Core\Support\Money::format()`.
+
+## 6. API conventions
+
+- Auth: every route group wrapped in `->middleware('auth:sanctum')`.
+  Guard write/approve endpoints with `->middleware('permission:<prefix>.<action>')` where
+  prefix = table prefix without underscore (`crm`, `prj`, …) and action ∈
+  `view, create, update, delete, approve, post`.
+- Standard endpoints per aggregate: `GET /` (paginated, `q` search param, sensible filters),
+  `POST /`, `GET /{id}`, `PUT /{id}`, `DELETE /{id}`, plus lifecycle actions as
+  `POST /{id}/submit`, `POST /{id}/approve`, `POST /{id}/reject`, and domain actions
+  (`POST /invoices/{id}/payments`, `GET /projects/{id}/s-curve`, …).
+- Validation ALWAYS via FormRequest. Line items validated as nested arrays
+  (`items.*.item_id` etc.) and replaced wholesale on update.
+- Header+lines documents are created/updated inside `DB::transaction()` in a Service class.
+
+## 7. Language & domain terms
+
+Code, identifiers, comments: English. Indonesian domain terms stay Indonesian where the
+industry uses them — enum values/labels and seed data may use RAB, RAP, AHSP, BAST, SPK,
+opname, termin, retensi. UI-facing labels (resource `label` fields) should be Indonesian.
+
+## 8. Seed data canon (use these EXACT codes for cross-module references)
+
+Seeders are idempotent: `Model::updateOrCreate(['code' => ...], [...])`. When referencing
+another module's rows, look them up by these canonical codes and skip gracefully
+(`if (! $row) return;`) if the other module isn't seeded yet.
+
+- Customers: `CUST-0001` PT Graha Sentosa Propertindo (developer),
+  `CUST-0002` PT Bank Artha Nusantara (bank), `CUST-0003` RS Medika Husada (hospital).
+- Contracts: `CTR/2026/I/0001` (konstruksi: Gedung Kantor Graha Sentosa, Rp 48.5 M),
+  `CTR/2026/II/0002` (integrasi: ELV & ICT 12 cabang Bank Artha, Rp 9.8 M),
+  `CTR/2026/III/0003` (maintenance CCTV & akses kontrol RS Medika, Rp 480 jt/tahun).
+- Projects: `PRJ-2026-001` Pembangunan Gedung Kantor Graha Sentosa (8 lantai, Jakarta Selatan),
+  `PRJ-2026-002` Instalasi ELV & Data Center Bank Artha Nusantara.
+- Addenda CTR/2026/I/0001 (`crm_contract_change_orders.customer_ref`, kodenya sendiri
+  dibangkitkan): `ADD-I/GSP/2026` tambah volume galian 800 m3, `ADD-II/GSP/2026` kurang
+  lingkup MEP lump sum senilai sama — **sepasang dan saling meniadakan**, sehingga nilai
+  kontrak demo tetap Rp 48.5 M (= total BOQ/2026/0001). `ProjectsDatabaseSeeder` mencari
+  keduanya lewat `customer_ref` itu untuk mengisi register volume `prj_contract_variations`.
+- Lokasi (`core_locations`): `GSP-T1` Gedung Utama · `GSP-T1-L01` + `GSP-T1-L01-ZA`
+  (EngineeringDatabaseSeeder) · `GSP-T1-L05` + `GSP-T1-L05-ZA`/`-ZB` (ProjectsDatabaseSeeder,
+  zona BAPP dan baris opname per zona). Menara `GSP-T1` di-`updateOrCreate` dengan muatan
+  yang sama oleh kedua seeder — mana pun yang jalan lebih dulu yang membuatnya.
+- Vendors: `VND-0001` PT Semen Distribusi Utama, `VND-0002` CV Baja Mandiri,
+  `VND-0003` PT Elektrindo Supply (ICT distributor), `VND-0004` CV Karya Sipil Sejahtera
+  (subcontractor, sipil), `VND-0005` PT Mekanika Prima (subcontractor, ME),
+  `VND-0006` Mandor Harjo Wibowo (`vendor_type` mandor, non-PKP, jasa — P4; register
+  dokumennya memuat K3L + pakta integritas + CV mandor `cv_mandor`),
+  `VND-0007` PT Alat Berat Nusantara (`vendor_type` rental, PKP, jasa — P5; lessor
+  aset sewa demo).
+- SP3 mandor (P4): `SP3/2026/III/0001` upah borongan pasangan bata & plesteran
+  (VND-0006 × PRJ-2026-001, approved, PPh final UMKM 0,5%) dengan opname mandor
+  `OPM/2026/III/0001` (approved, tanpa potongan kasbon — kasbon demo milik seeder
+  Finance, menautkannya lintas-seeder rapuh terhadap urutan).
+- Aset sewa (P5): `AST-0007` Excavator Doosan DX225LCA (sewa dari VND-0007,
+  Rp 400.000/jam, periode 2026-06-01 s/d 2026-12-31) — di-`updateOrCreate` dengan
+  muatan yang sama oleh `AssetsDatabaseSeeder` DAN `ProcurementDatabaseSeeder`
+  (pola menara `GSP-T1`: mana pun yang jalan lebih dulu yang membuatnya, karena
+  baris per_jam PPK demo harus bisa menunjuk alatnya berapa pun urutan seed).
+  Register hour-meter demonya 3.240,0 → 3.375,5 (Juli 2026, = 135,5 jam).
+- PPK alat & jasa (P5): `PPK/2026/VI/0001` sewa excavator per jam + scaffolding per
+  bulan (VND-0007 × PRJ-2026-001, approved, PPN 11%, nilai plafon Rp 585 jt) dengan
+  tagihan periode `PPKB/2026/VII/0001` (Juli 2026: 135,5 jam dari register + 1 bulan
+  kalender = Rp 69,2 jt). Tagihan AP-nya sengaja TIDAK diseed — membuatnya adalah
+  alur demo, dan seeder Finance memiliki jurnalnya sendiri (pelajaran P4).
+- Items: `ITM-0001` Semen Portland 50kg (zak), `ITM-0002` Besi Beton D16 (btg),
+  `ITM-0003` Kabel UTP Cat6 (roll), `ITM-0004` CCTV Dome 4MP (unit),
+  `ITM-0005` Pasir Beton (m3), `ITM-0006` Switch Managed 24 Port (unit),
+  `ITM-0007` Ready Mix K-300 (m3), `ITM-0008` Access Point WiFi 6 (unit).
+- Warehouses: `WH-PUSAT` Gudang Pusat (Cakung), `WH-PRJ-2026-001`, `WH-PRJ-2026-002` (site).
+- Employees: `EMP-0001` Budi Santoso (Direktur), `EMP-0002` Rina Wijaya (Project Manager),
+  `EMP-0003` Agus Prasetyo (Site Manager), `EMP-0004` Dewi Lestari (Finance Manager),
+  `EMP-0005` Andi Kurniawan (Procurement), `EMP-0006` Siti Rahayu (HR & GA),
+  `EMP-0007` Joko Susilo (Teknisi ELV), `EMP-0008` Made Wirawan (Drafter/Estimator).
+- COA roots: 1-xxxx Aset, 2-xxxx Kewajiban, 3-xxxx Ekuitas, 4-xxxx Pendapatan,
+  5-xxxx Beban Proyek (HPP), 6-xxxx Beban Operasional, 7-xxxx Pendapatan/Beban Lain.
+
+## 9. Builder output expectations
+
+Every module ships: migrations, models (relations + casts), enums, services with the real
+business math, FormRequests, Resources, thin controllers, routes, and a seeder producing a
+believable demo dataset that exercises the module (documents in several statuses).
+No TODO stubs for core flows. PHP 8.2+, typed signatures, `declare(strict_types=1);` NOT
+used (match Laravel skeleton style). Tests are optional; correctness of business math is not.
+
+## 10. Pustaka vendor SPA (`public/app/vendor/`)
+
+Aturan (ROADMAP-HASHMICRO §5 keputusan #2): **tanpa CDN, tanpa npm saat runtime, tanpa pustaka
+lain tanpa keputusan pemilik**. Yang di-vendor hanya SortableJS 1.15 dan sprite ikon Lucide subset,
+masing-masing di `public/app/vendor/<lib>@<ver>/` bersama LICENSE-nya; grafik ditulis sendiri
+(`js/charts.js`, §11). Manifestnya `public/app/vendor/VENDOR.md` — per pustaka: versi, URL sumber,
+sha256 tarball, lisensi, gzip terukur, untuk apa, cara memperbarui (perintah persis); per berkas:
+sha256. Uji `tests/Feature/Core/VendorManifestTest` memaku semuanya: setiap berkas vendor ada di
+manifest dengan sha yang sama dan sebaliknya; tidak ada `<script src>`, `<link href>`, `import`,
+`import()`, `new URL`, `fetch`, `url()`, `@import` yang menunjuk `http(s)://` atau `//host` di mana
+pun di bawah `public/app` — `srcset`/`imagesrcset` diperiksa per kandidat, bukan hanya kandidat
+pertamanya; literal http(s) yang bukan pemuat hanya boleh namespace W3C, tautan `<a>`/`href:`,
+atau komentar (aturan tertulis di uji — tambah aturan, bukan allowlist). Aturan `href:` bukan
+regex tetapi pindaian kurung berimbang: literal itu harus nilai langsung kunci `href` di argumen
+objek pertama pemanggilan `el('a…', { … })` **terdalam** yang melingkupinya (urutan kunci bebas,
+`el('div', {}, el('a', { onclick, href }))` sah), sedangkan `el('link'|'script'|'img'|'iframe'|
+'source'|'video'|'audio'|'embed'|'object'|…, { src|href|srcset|poster|… })` ke luar adalah pemuat
+betapa pun dalamnya ia bersarang di `el('a')` — `ui.js el()` memanggil `setAttribute`; jumlah gzip ≤ 60 KB
+(dicetak saat uji); sprite XML sah dengan `<symbol id="lucide-…" viewBox>`; `Sortable.min.js`
+identik dengan sha manifest.
+
+Cara memakai: ikon lewat `ui.js svgIcon(nama, { size, label })` → `<svg class="lucide"><use
+href="vendor/lucide@<ver>/sprite.svg#lucide-<nama>">` (nama kanonik Lucide; nama `icon()` lama
+dipetakan). Sortable dimuat malas oleh layar yang memakainya (`<script src="vendor/sortablejs@
+<ver>/Sortable.min.js">` sekali, lalu global `Sortable`) — bukan oleh shell, supaya layar yang
+tidak menyeret apa pun tidak membayarnya. Memperbarui versi = folder baru, ubah rujukan
+(`LUCIDE_SPRITE` di ui.js / pemuat Sortable), hapus folder lama, tabel manifest ditulis ulang
+dari perintah di VENDOR.md, uji hijau.
+
+## 11. Grafik (`public/app/js/charts.js`)
+
+Semua grafik baru memakai `js/charts.js` — lima fungsi murni yang mengembalikan `<svg>`:
+`lineChart`, `barChart`, `donutChart`, `sparkline`, `ganttChart`. **Docblock di kepala berkas
+itu adalah referensi API-nya** (parameter, bawaan, perilaku data kosong/celah/satu titik/negatif,
+gantt terbuka); jangan menyalin ulang aturannya ke sini. Yang wajib dipegang pemanggil:
+
+- Warna hanya lewat token `--chart-1..8` (seri), `--chart-grid/-axis/-text/-today/-weekend/
+  -baseline` (app.css, dua tema + blok cetak; rasio kontras ≥ 3:1 terhadap `--surface` tercatat di
+  komentar tokennya). Tidak ada literal warna di charts.js maupun di pemanggil — kalau butuh warna
+  khusus (mis. GRN vs PO), itu seri sendiri dengan label di legenda.
+- Data kosong/null → grafik memasang placeholder "Belum ada data" (`data-empty="true"`); pemanggil
+  boleh menggantinya dengan `ui.emptyState()`, tetapi tidak boleh mengganti null menjadi 0 sebelum
+  memanggil grafik (aturan kejujuran §6). Nilai yang tak terukur dikirim sebagai `null`.
+- Format angka/tanggal diberikan pemanggil (`yFormat`, `valueFormat`, `xFormat`) dari `format.js`
+  (`fmt.rupiahShort`, `fmt.percent`, `fmt.date`) supaya sumbu, `<title>`, dan tabel di bawahnya
+  memakai format yang sama. **`yFormat` bukan hanya sumbu**: charts.js memakainya juga untuk
+  `<title>` bawaan setiap titik tanpa judul sendiri, jadi `` `${v}%` `` mencetak titik desimal
+  Inggris di aplikasi berkoma — pakai `fmt.percent` (verifikasi P1-E).
+- **Lebar viewBox mengikuti lebar layar**: `chartWidth()` (720 desktop / 380 di ≤ 560 px). svg
+  ber-viewBox tetap diregangkan CSS ke lebar kartunya, jadi 720 pada kartu ponsel 328 px
+  menuliskan legenda dan label sumbu pada 5,0 px terbaca. Diukur S20em, lantai 9 px.
+- **Seri yang DIUKUR lebih tebal daripada seri acuannya**: `series[].width` (bawaan 2, dijepit
+  1–4; 2,5 untuk seri terukur). Hierarki ini dulu hidup di `.chart .act` grafik tangan dan hilang
+  tanpa suara saat charts.js menuliskan 2 untuk semuanya (verifikasi P1-E).
+- **Pola putus yang ditulis pemanggil menang DI KERTAS juga**: aturan blok cetak memakai
+  `:not([stroke-dasharray])`, karena deklarasi CSS mengalahkan atribut presentasi. Tanpa itu
+  setiap `dash` yang dipilih pemanggil hilang begitu halamannya dicetak.
+- Setiap mark membawa `<title>`; harness S20 (`docs/bukti-uji/harness-playwright.py`) menghitung
+  `.mark > title` == `.mark`, warna terkomputasi == token di tema terang & gelap, dan placeholder — jangan
+  menambah `<title>` di luar mark (legenda, label) karena hitungan `<title>` liar akan pecah. Satu
+  pengecualian yang disengaja: label gantt yang dipotong (`data-truncated`) membawa nama lengkapnya.
+- Gantt dibungkus `<div class="chart-scroll">` (menggulir mendatar di ponsel); grafik lain
+  langsung di `.card-body`.
+- **Tidak ada lagi grafik tangan (P1-E).** Kurva-S (`views/project.js`), kurva EVM
+  (`views/evm.js`) dan tren harga satuan (`views/hargasatuan.js`) sekarang memanggil
+  `lineChart`; ketiganya hanya menyusun DATA. `ChartMigrationTest` menolak
+  `document.createElementNS` yang kembali ke ketiga berkas itu — grafik tangan keempat akan lahir
+  tanpa token, tanpa `<title>` per tanda, dan tanpa blok cetak, yaitu persis tiga hal yang P1-A
+  dibangun untuk memberikannya. Butuh sesuatu yang belum ada? Tambahkan di `charts.js`, supaya
+  SEMUA grafik ikut mendapatkannya.
+- **Sifat yang milik PEMANGGIL, bukan grafik**, dan karena itu dipaku uji per layar: sumbu EVM
+  yang boleh naik melewati 100 % (`yMax = Math.max(100, …)` — sumbu yang ditahan di 100 % memotong
+  garis biaya justru pada proyek yang sudah melewati anggarannya), dan sumbu tren harga yang TIDAK
+  dipaksa memuat nol (`yMin/yMax` sendiri — bawaan charts.js selalu memuat nol, dan tren
+  12.500 → 13.750 pada sumbu 0..14.000 tampak datar).
+- **Satu legenda per grafik.** `charts.js` menggambar legendanya di dalam svg (ikut tercetak, ikut
+  ter-skala), jadi blok `.legend` DOM di sebelahnya dibuang. Yang tersisa memakainya hanya tren
+  harga satuan, karena pembedanya per TITIK (PO vs GRN pada satu garis kronologis, `points[].token`)
+  dan itu tidak bisa dinyatakan legenda per-seri; swatch-nya memakai token `--chart-*` yang sama
+  dengan titiknya. Alasannya KERTAS, bukan layar: blok cetak hanya menukar token `--chart-*`
+  menjadi abu-abu, jadi titik ber-`--warning` tercetak BERWARNA di tengah grafik yang seluruhnya
+  abu-abu (terukur 6 Sep 2026: `--warning` #96601a di layar dan di cetak, `--chart-7` #a16207 →
+  #363636). Sebelum verifikasi P1-E alasan yang ditulis di sini adalah "swatch tercetak berbeda
+  dari titiknya", dan itu tidak pernah benar — keduanya memakai `--warning` yang sama.
+
+## 12. Aksen modul (`--accent-1..8`, P1-B)
+
+Delapan slot warna departemen di `public/app/app.css` — `--accent-<n>`, `--accent-<n>-soft`,
+`--accent-<n>-fg` didefinisikan **lima kali**: empat blok tema (root terang, media gelap,
+`data-theme` terang/gelap) dan blok token `@media print`, yang memaksa ketiganya ke nilai TERANG
+supaya pengguna bertema gelap tidak mencetak aksen gelap di kertas putih (slot 7 `#fbcd1a` = 1,52:1
+sebelum blok itu ada). Slot baru harus ditambahkan di kelimanya.
+Setiap grup NAV membawa `prefix` (prefix izinnya; Ringkasan = `ringkasan`) dan `schema.js MODULES`
+memetakan prefix → `{ accent, icon, description }`. Pemetaan 14 grup → 8 slot, diturunkan dari isi
+NAV (bukan grup baru):
+
+| Slot | Grup NAV (prefix) | Alasan |
+|---|---|---|
+| 1 | Proyek (`prj`) | lapangan; slot 1 = `--primary` = `--chart-1` persis |
+| 2 | Keuangan (`fin`) | keuangan & pajak |
+| 3 | Pengadaan (`prc`) · Persediaan (`inv`) · Subkontrak (`scm`) | rantai pasok; subkon adalah vendor (`is_subcontractor`) |
+| 4 | Penjualan (`crm`) · Estimasi (`est`) | komersial; RAB disusun bersama tender |
+| 5 | SDM & Payroll (`hr`) | |
+| 6 | Aset (`ast`) | peralatan |
+| 7 | Layanan (`svc`) | tiket & kontrak layanan |
+| 8 | Sistem (`iam`) · Mutu (`qc`) · Engineering (`eng`) · Ringkasan | fungsi penunjang, slot netral (abu kebiruan) |
+
+**Hubungan dengan grafik:** `--accent-n` memakai sudut hue Lab yang sama dengan `--chart-n`
+(toleransi ±12°), hanya L dan C yang digeser sampai semua pasangan slot berjarak **≥ 20 ΔE2000**
+— palet grafik apa adanya gagal (terang 2–6 = 10,2; gelap 1–8 = 13,8). Terukur 5 Sep 2026
+(CIEDE2000 di Lab; skrip turunan di scratch P1-B, matriks lengkap di komentar token app.css):
+minimum antar slot **20,1 terang / 20,9 gelap** (hue vs `--chart-n` maks 11,8° terang / 7,3° gelap);
+kontras WCAG aksen di `--surface` ≥ **5,20** terang /
+**5,41** gelap (batas 3:1; dipasang ≥ **5,2** karena aksen dipakai sebagai teks remah — angka yang
+sama dengan komentar blok token app.css), `-fg` di aksen
+≥ 5,20 / 5,86, aksen di `-soft` ≥ 4,62 / 4,82. Harness **S21** mengukur nilai yang hidup di
+halaman (kedua tema, desktop + ponsel) dan menulisnya ke `results-phase-1.json`; uji
+`SidebarNavWiringTest` memaku slot 1..8 dan ketiga tokennya tepat lima kali (empat blok tema +
+blok `@media print`), sedangkan S21 `print_accents` mengukur nilai cetaknya di kertas
+(minimum 5,20 di `#ffffff`).
+
+**Di mana aksen boleh tampil** (dan hanya di sini): penanda grup aktif di sidebar
+(`.nav-group.has-active > button`: batang 3 px + judul), remah modul di bilah atas
+(`#crumbs a.crumb-module`, tautan ke `#/m/<prefix>`), kepala beranda modul (`.module-head`), dan
+tepi kartu launcher (P1-C). Mekanismenya satu atribut `data-accent="n"` yang app.css ubah menjadi
+`--module-accent`/`-soft`/`-fg`; aturan komponen hanya menyebut ketiga variabel itu. **Tidak
+pernah** pada lencana, alert, tombol, atau status — semantik `--success/--warning/--danger` tetap.
+Catatan jujur: slot 3/6/7 sekeluarga hue dengan success/danger/warning (warisan palet grafik);
+itulah sebabnya aksen tidak boleh muncul di bentuk yang sama dengan lencana.
+
+## 13. Kepadatan (`--row-h`, P1-B)
+
+Tiga profil, `data-density` di `<html>`: `compact` 32 px · `normal` 38,5 px · `comfortable` 48 px
+per baris satu-baris `table.data`. **`normal` = angka yang diukur sebelum token ada** (13 px × 1,5 +
+2 × 9 padding + 1 border = 38,5; berlencana 41,13; bertombol aksi 47) sehingga tanpa pilihan
+tidak ada yang bergeser — lantai 38,5 tidak pernah mengikat. `compact` menurunkan padding ke 3 px
+dan tombol aksi baris ke 24 px (hanya `pointer: fine` — di layar sentuh sasaran jempol 36 px
+menang, baris rapat bertombol 43 px dan baris bertombol `normal` maupun `comfortable` 55 px;
+tautan sidebar di layar sentuh ≥ 36 px di semua profil, baris radio dialog ≥ 40 px, dan petunjuk
+dialog di sana menyebut dua angka "teks · bertombol"), `comfortable` menahan padding dan menaikkan lantai; di
+kedua profil itu **semua** baris satu-baris tepat 32/48 (kunci S21 yang benar-benar ditulis harness:
+`density.compact_ok` / `comfortable_ok`, `normal_equals_baseline` — termasuk tfoot daftar PO —
+dan `tfoot_normal_41`). Token turunan: `--cell-py/--cell-px` (td, th), `--foot-py` (tfoot: 10 px normal —
+angka sebelum token, baris total 41 px — · 4 rapat · 10 lega), `--nav-py` (baris sidebar), `--form-gap`
+(`.form-grid`), `--kv-gap` (`.kv`). Kontrol: dialog Akun › **Kepadatan**
+(tiga radio: Padat · Normal · Lega — "Padat", bukan "Rapat", yang di ERP terbaca sebagai
+pertemuan), berlaku seketika. Simpanan: `localStorage`
+`nusantara_erp_density:<id pengguna>` (`personalKey`, seperti favorit) dengan nilai
+`compact|normal|comfortable`, dipasang saat evaluasi modul app.js dan lagi di `boot()` — sebelum
+shell digambar, tanpa kedipan. **Sejak P1-C nilainya preferensi SERVER** (`core/me/preferences`,
+§15); `localStorage` tinggal cermin yang menjawab seketika, dan kunci `nusantara_erp_density:<id>`
+dinaikkan sekali lalu dihapus oleh `js/prefs.js`.
+
+## 14. Keadaan kosong berilustrasi (`ui.emptyState`, P1-B)
+
+`emptyState(message, { title, action, kind, compact })`; tanda tangan lama (`message`, `{ title,
+action }`) tetap sah — bawaan `kind: 'inbox'`. Lima jenis di `js/illustrations.js`:
+
+| kind | Arti | Pemakai |
+|---|---|---|
+| `inbox` | belum ada yang tercatat | daftar tanpa baris (+ Tambah), pemberitahuan, kalender, beranda modul tanpa layar yang boleh dibuka |
+| `search` | pencarian tanpa hasil | daftar dengan `q` saja (`Tidak ada <label> yang cocok dengan "<q>".` + **Hapus pencarian**) |
+| `filter` | filter menyaring semuanya | daftar tersaring (`Tidak ada <label> yang lolos filter yang dipasang.` + **Hapus filter**) |
+| `error` | sumbernya gagal, bukan kosong | kotak masuk/Tugas Saya saat `meta.failed` — jangan pernah `inbox`/`done` untuk kegagalan |
+| `done` | semuanya selesai | kotak masuk kosong, piutang/tiket tanpa yang tertunda, "Stok aman" (Saldo Stok), "Laci bersih" (Kasir Kas Kecil) |
+
+Aturan gambar: SVG garis (stroke) 120 × 120, dibaca di 96–120 px (ubin `compact` 72 px), **tanpa
+satu pun literal warna** — bentuk hanya membawa kelas `.ln/.ac/.fl/.fa` dan app.css memberi token
+(`--border-strong`, `--primary`, `--surface-3`, `--primary-soft`; `error` → `--danger`, `done` →
+`--success`), sehingga tema gelap otomatis dan S21 mengukur stroke terkomputasinya (`empty_kinds`);
+≤ 1,5 KB per gambar (terukur 402–521 B). `list.js` membedakan "belum ada baris" dari "tersaring
+habis", dan yang tersaring habis menyebut penyaringnya: pencarian (`… yang cocok dengan "<q>".` +
+Hapus pencarian) atau filter (`… yang lolos filter yang dipasang.` + Hapus filter) — tiga kalimat,
+tiga gambar; judul tidak mengulang kalimatnya. Ilustrasi
+baru = entri di `ILLUSTRATIONS` + baris di tabel ini.
+
+## 15. Preferensi pengguna (`core_user_preferences`, P1-C)
+
+Apa pun yang seseorang PILIH untuk dirinya sendiri — favorit, "Terakhir dibuka", kepadatan, susunan
+dasbor (P1-D) — hidup di `core_user_preferences` (satu baris per pengguna per kunci,
+`UNIQUE(user_id, key)`), bukan di `localStorage`. Alasannya diukur: sampai P1-B ketiganya berkunci
+`<nama>:<id pengguna>` di peramban, jadi bintang yang dipasang di desktop kantor tidak ada di tablet
+lapangan milik orang yang sama, dan "Hapus data situs" menghapus semuanya tanpa jejak.
+
+**Whitelist, bukan kolom bebas.** `Modules\Core\Support\UserPreferences::keys()` — satu entri per
+kunci dengan `label`, `max_bytes`, `max_entries`, dan `validate`. Kunci di luar daftar dijawab
+**422 yang menyebut kuncinya**; plafon keras **16 KB** per nilai (`MAX_BYTES`), tiap kunci boleh
+lebih ketat. Angka-angka itu ditulis literal di `UserPreferencesTest` — sampai verifikasi P1-C
+uji plafon membangun muatannya DARI konstanta yang diujinya, jadi menaikkan 16384 → 32768 lolos
+hijau. Tanpa
+daftar itu `PUT core/me/preferences/{key}` — yang sengaja tanpa gerbang izin, karena barisnya milik
+pemanggil sendiri dan tidak ada parameter yang bisa menyebut orang lain (pola `GET core/inbox`) —
+adalah penyimpanan bebas 16 KB × kunci sebanyak-banyaknya × jumlah pengguna, ikut ke setiap backup.
+
+| kunci | isi | plafon |
+|---|---|---|
+| `favorites` | daftar rute NAV yang dibintangi (keanggotaan NAV diperiksa `Support\SpaNav`) | 50 entri / 4 KB |
+| `recent` | `{route,label,sub,at}` dokumen terakhir dibuka; field di luar keempatnya ditolak | 20 entri / 8 KB |
+| `density` | `compact` \| `normal` \| `comfortable` (§13) | 64 B |
+| `dashboard.layout` | susunan dasbor P1-D: `[{id,size}]`, id diperiksa `Support\SpaWidgets`, size ∈ {kecil, sedang, lebar}, duplikat ditolak | 24 entri / 16 KB |
+| `launcher.hidden` | prefix modul yang disembunyikan dari `#/home` | 32 entri / 512 B |
+
+**Kejujuran.** Kunci yang belum pernah dipilih **tidak punya baris**; bawaan (`normal`, `[]`) milik
+SPA. Baris `density: 'normal'` yang ditulis server berbohong bahwa orangnya pernah memilih.
+
+**Plafon diumumkan, bukan disalin.** `GET core/me/preferences` menjawab `meta.keys` =
+`UserPreferences::describe()`, satu objek `{key, label, max_bytes, max_entries}` per kunci, dan
+`prefs.js` MEMBACANYA (`api.list`, karena `api.get` membuang meta). Bentuk lama — daftar nama +
+`MAX_BYTES` saja — menjanjikan pencegahan yang tidak pernah terjadi: tidak ada yang membacanya,
+klien tetap menyalin 50/20 sendiri, dan 16384 yang diumumkannya bukan plafon yang berlaku untuk
+`favorites` (4096) maupun `recent` (8192).
+
+**`SpaNav`** membaca rute dan prefix NAV dari `public/app/js/schema.js` (memo per proses). Menyalin
+131 rute ke PHP akan basi pada sunting pertama, dan yang basi di sini adalah VALIDATOR. Berkas tidak
+terbaca → daftar kosong → validator jatuh ke pemeriksaan bentuk saja; bintang yang ditolak karena
+deploy terbaca sebagai bintang yang rusak.
+
+**Sisi SPA** — `js/prefs.js`, dan hanya berkas itu yang boleh menyentuh kunci warisan (dipaku
+`LauncherWiringTest`). Server adalah kebenaran; `localStorage` adalah CERMIN, untuk tiga hal yang
+butuh jawaban seketika: kepadatan dipasang sebelum shell digambar (tanpa cermin ada kedipan), antrean
+Lapangan yang luring, dan sesi yang berakhir di tengah kerja. Migrasi satu kali dijalankan **per
+kunci**: server yang sudah punya barisnya MENANG, dan kunci lokal hanya dihapus setelah server
+benar-benar punya nilainya. `set()` optimistis (cermin dulu, PUT menyusul); PUT yang tidak pernah
+sampai dicoba lagi pada boot berikutnya. `load()` mengumumkan `erp:prefs-loaded`, dan layar yang
+sudah tergambar dari cermin (launcher, beranda modul) menggambar ulang BAGIANNYA — bukan rutenya,
+yang berarti setiap permintaan layar berjalan dua kali.
+
+## 16. Registri `ModuleCounts` (P1-C)
+
+Satu angka utama per modul, dipimpin ubin launcher `#/home` dan kepala beranda modul `#/m/<prefix>`.
+`Modules\Core\Support\ModuleCounts::entries()` — satu entri per prefix grup NAV, **dalam urutan NAV**;
+kelengkapan dan urutannya dipaku `ModuleCountsTest` terhadap `schema.js`, jadi grup ke-15 tanpa entri
+menjatuhkan uji alih-alih diam-diam menghasilkan ubin tanpa angka selamanya.
+
+Per entri: `label` (nama angkanya), `unit` (ubin menulis "7 proyek", bukan "7"), `permission`
+(null = semua yang punya sesi), `tables` (setiap tabel yang disentuh; dijaga `Schema::hasTable`
+dengan memo per proses, di-flush `ErpTestCase::setUp`), `count` (**satu** kueri `DB::table`), dan
+`why` — alasan angka INI, bukan angka lain, yang memimpin modulnya.
+
+**Biaya kuerinya diukur, bukan diasumsikan.** `EXPLAIN` keempat belas kueri di MySQL 8
+(verifikasi P1-C putaran 2, 6 Sep 2026) menemukan tiga pemindaian tabel penuh (`type=ALL key=NULL`):
+`qc_ncr.status`, `hr_leave_requests.status`, dan `eng_drawing_submittals(decision, superseded_at)`.
+Ketiganya sekarang berindeks (migrasi Core `000196`, hanya indeks, berpenjaga `Schema::hasTable`),
+dan `ModuleCountsTest::test_the_scanning_counts_have_their_indexes` menjaga agar tidak hilang lagi —
+sejak P1-C hitungan ini berjalan setiap kali launcher `#/home` dibuka, yaitu landing ponsel setiap
+pengguna. Satu pemindaian TERSISA dan disengaja: entri `inv`. Sejak F-6 (8 Sep 2026) kuerinya bukan lagi
+satu perbandingan `b.qty < i.min_stock` antar dua tabel melainkan DUA LENGAN yang saling
+meniadakan lewat `r.id`, di atas `LEFT JOIN inv_reorder_rules` — ambangnya `r.reorder_point`
+bila ada aturan AKTIF untuk pasangan gudang × item, dan `i.min_stock` bila tidak. `EXPLAIN`-nya
+dijalankan ulang pada kedua driver (putaran perbaikan F-6, 8 Sep 2026):
+
+```
+-- SQLite (EXPLAIN QUERY PLAN, salinan basis data demo yang sudah dimigrasi)
+SCAN b
+SEARCH i USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH w USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH r USING INDEX inv_reorder_rules_warehouse_id_item_id_unique (warehouse_id=? AND item_id=?) LEFT-JOIN
+
+-- MySQL 8 (erp_dryrun)
+b  type=ALL     key=NULL                                            (pemindaian yang disengaja)
+i  type=eq_ref  key=PRIMARY
+w  type=eq_ref  key=PRIMARY
+r  type=eq_ref  key=inv_reorder_rules_warehouse_id_item_id_unique   ref=b.warehouse_id, b.item_id
+```
+
+Join ke tabel aturan TIDAK menambah pemindaian: UNIQUE (warehouse_id, item_id) melayaninya
+sebagai `eq_ref` di MySQL dan sebagai `SEARCH … USING INDEX` di SQLite. Yang tersisa tetap
+`SCAN b` — tidak ada indeks yang bisa melayani perbandingan antar KOLOM (`b.qty <
+r.reorder_point`), dan bila `inv_stock_balances` tumbuh melewati ~100 rb baris angka itu perlu
+tabel ringkasan, bukan indeks.
+
+Sejak putaran ketiga F-6 entri ini menghitung **dua kueri yang dijumlahkan** (§31): yang di atas,
+dan pasangan yang aturannya hidup tetapi belum punya satu baris saldo pun. `EXPLAIN` yang kedua,
+dijalankan pada kedua driver (9 Sep 2026):
+
+```
+-- SQLite (EXPLAIN QUERY PLAN, salinan basis data demo yang sudah dimigrasi)
+SCAN r
+SEARCH i USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH w USING INTEGER PRIMARY KEY (rowid=?)
+SEARCH b USING COVERING INDEX inv_stock_balances_warehouse_id_item_id_unique (warehouse_id=? AND item_id=?) LEFT-JOIN
+
+-- MySQL 8 (erp_dryrun)
+r  type=ALL     key=NULL                                              Using where
+i  type=eq_ref  key=PRIMARY                                           ref=r.item_id
+w  type=eq_ref  key=PRIMARY                                           ref=r.warehouse_id
+b  type=eq_ref  key=inv_stock_balances_warehouse_id_item_id_unique    ref=r.warehouse_id, r.item_id ; Not exists; Using index
+```
+
+`SCAN r` adalah pemindaian tabel ATURAN — sebesar jumlah aturan yang benar-benar ditetapkan orang,
+bukan sebesar katalog atau sebesar `inv_stock_balances` — dan pencarian saldonya dilayani indeks
+unik pasangan yang sama (`Not exists` di MySQL: ia berhenti pada baris saldo pertama yang cocok).
+Jadi tidak ada pemindaian tabel penuh KEDUA.
+
+Entri baru, ATAU entri lama yang kuerinya berubah bentuk: jalankan `EXPLAIN`-nya dan tulis
+hasilnya di sini atau tambahkan indeksnya.
+
+`label` punya CERMIN di klien: `schema.js` `MODULES[prefix].kpi`. Ia ada karena ubin harus bisa
+menyebut angka yang tidak dikirim server — entri yang izinnya tidak dipegang tidak ada di jawaban,
+jadi tanpa cermin itu ubinnya menulis `—` telanjang tanpa satu kata pun. Kesetaraan kedua daftar
+dipaku `ModuleCountsTest`.
+
+Dua aturan yang sama dengan `WatchedDeadlines`: **tanpa mengimpor modul fitur** (literal string,
+dipaku uji, jadi penggantian nama status di lane tim lain menjatuhkan uji dan bukan mengosongkan
+ubin) dan **degradasi per entri**. `deleted_at` diperiksa tangan di setiap kueri — `DB::table`
+melewati scope `SoftDeletes`.
+
+Klaim "dipaku uji" itu hanya sekuat fixture-nya: satu baris per status membuat angka harapan (1)
+benar untuk status apa pun, dan sampai verifikasi P1-C empat mutasi status/scope lolos hijau. Sejak
+itu tiap entri berstatus punya **2 baris yang masuk hitungan dan 1 per status yang tidak**, satu
+baris yang **sudah dibuang** di tiap tabel penghapus-lembut, dan baris untuk status yang
+diperdebatkan entri itu sendiri (`svc` `pending_customer`) — 12 mutasi status/scope merah.
+
+**Absen ≠ 0.** Izin tidak dipegang, atau tabel belum ada → entri **TIDAK ADA**. Kueri melempar →
+`count: null` + `Log::warning`, tidak pernah 500. Sebuah 0 adalah pernyataan ("saya menghitung, dan
+hasilnya nol"); "0 tiket" di layar orang yang memang tidak boleh melihat tiket adalah kebohongan
+yang tampak seperti kabar baik. SPA menulis `—` untuk keduanya.
+
+**Satu kueri per entri adalah batasan yang dipilih**: blok ini ikut jawaban dasbor
+(`?include=modules`) dan endpoint launcher, keduanya dibaca di ponsel lapangan. Angka yang butuh join
+berlapis atau "baris terakhir per grup" (mis. "aset jatuh tempo servis", yang aturannya sudah
+dimiliki `WatchedDeadlines`) sengaja tidak diambil: salinan kedua sebuah aturan adalah penyimpangan
+yang paling mahal. Tiga angka yang SUDAH punya pemilik lain dipaku setara — `prj` = dasbor
+`projects.active_count`, `fin` = dasbor `ar_invoices.open_count`, `inv` =
+`StockService::lowStockAlerts()->count()`.
+
+**Endpoint.** `GET core/modules` (launcher) dan blok `modules` pada `GET core/dashboard/summary`
+**hanya bila `?include=modules`** — tanpa parameter itu jumlah permintaan dan bentuk jawaban dasbor
+tidak berubah sedikit pun (target metrik Fase 1). Keduanya tanpa gerbang izin, pola
+`search`/`calendar`: registri menyaring dirinya sendiri per entri.
+
+## 17. Widget dasbor (`public/app/js/views/widgets/`, P1-D)
+
+Dasbor `#/dashboard` adalah **penyusun**, bukan penggambar. `views/dashboard.js` membaca susunan
+orangnya, menggambar kerangka kartu dalam urutan itu, lalu memanggil `views/widgets/<id>.js` **per
+batch 4**. Setiap angka, tabel dan cabang "gagal dimuat" hidup di berkas widget-nya sendiri.
+
+**Katalog = satu daftar deklaratif** (`views/widgets/registry.js`), selera yang sama dengan
+`ModuleCounts` / `UserPreferences`: widget berikutnya adalah satu entri array + satu berkas.
+Per entri — `id` (nama berkas DAN kunci preferensi), `title`, `desc` (kalimat di laci), `module`
+(prefix grup NAV → aksen §12), `perm` (nama izin, `null`, `'*.approve'`, atau daftar "salah satu
+cukup"), `route` (layar yang memuat angkanya lengkap), `sizes` + `size`.
+
+**Metadata di registry, kode di berkas widget.** Laci "Atur dasbor" harus menawarkan seluruh katalog
+termasuk yang tidak dipakai; bila judul dan izinnya hidup di dalam berkas widget-nya, membuka laci
+berarti mengunduh 19 modul yang belasan di antaranya tidak akan digambar. Penggambarnya diimpor
+**dinamis** hanya bila widget-nya ada di susunan orangnya.
+
+**`perm` sengaja string, bukan predikat.** `Modules\Core\Support\SpaWidgets` membacanya dari
+registry.js dengan regex yang sama seperti `SpaNav` membaca NAV, dan `DashboardDefaultsTest`
+memakainya untuk membuktikan — terhadap `RoleSeeder::intended()` yang asli — bahwa **setiap peran
+demo mendapat sedikitnya satu widget**. Itulah metrik Fase 1 "0 peran tanpa ubin", dijadikan uji
+alih-alih pengukuran yang basi pada sunting berikutnya.
+
+**Aturan wajib per widget** (dipaku `DashboardTileFailureTest`, yang memindai folder — widget baru
+ikut diperiksa tanpa satu baris pun ditambahkan di ujinya):
+
+1. Berkas yang mengekspor `build(` **adalah** widget: ia wajib ada di katalog, dan katalog wajib
+   punya berkasnya. Berkas tanpa entri = kode mati; entri tanpa berkas = kartu yang ditawarkan laci
+   lalu gagal di-`import`.
+2. Setiap widget **bercabang `failure(`** di KODE (komentar dibuang sebelum dipindai). Sumber yang
+   gagal dan sumber yang kosong tidak boleh terbaca sama — pelajaran Temuan 79.
+3. Tidak ada `.catch(() => …)` di mana pun di dasbor: catch yang tidak menerima error-nya tidak bisa
+   memberi tahu ubinnya bahwa angkanya tidak diketahui.
+
+**Perkakas bersama** `views/widgets/kit.js`: `safe()` / `safeList()` (fetch bertanda `loadFailure`),
+`failure()`, `failedStat()` (`—`, tidak pernah Rp 0), `failedBody()`, `miniTable()`, `barRows()`.
+Aturannya hidup satu kali; menyalinnya ke 19 berkas adalah cara paling pasti membuat 18 menyimpang.
+
+**Ukuran**: `kecil` 1 kolom, `sedang` 2, `lebar` 3 (satu baris penuh) di kisi tiga kolom; dua kolom
+di bawah 1180 px, satu kolom di bawah 760 px — titik potong yang sama dengan laci nav dan aturan
+landing P1-C.
+
+**Vendor dimuat malas.** SortableJS (seret-lepas di laci) diambil `js/vendorload.js` saat laci
+DIBUKA, bukan oleh shell. Urutan tetap bisa diubah dengan tombol Naik/Turun tanpa satu byte vendor
+pun; berkas vendor yang gagal dimuat mencatat sekali di konsol dan tidak mematikan apa pun.
+
+## 18. Laporan Bebas — registri `ReportableResources` (P1-F)
+
+Penyusun laporan atas **delapan** resource (keputusan pemilik ledger #4), satu layar
+`#/laporan-bebas`, satu endpoint `POST core/reports/run` = **satu** kueri `DB::table` ber-whitelist.
+
+**"Kolom = kolom layar daftar" tidak bisa harfiah, dan registri mengatakannya.** Hanya 31 dari 90
+layar daftar yang seluruh kolomnya kolom tabel dasar; sisanya memuat jalur relasi (`vendor.name`)
+atau medan yang dihitung kelas Resource (`outstanding`, `project_code`). Maka `columns` dikunci
+dengan **kunci kolom layar, dalam urutan layar, setiap kunci hadir**, dan setiap kunci berakhir di
+salah satu dari **tiga nasib** — tidak ada nasib keempat:
+
+| nasib | bentuk | contoh |
+|---|---|---|
+| dipetakan | `select` = kolom tabel bernama sama | `amount` |
+| digantikan | `select` = kolom lain + `lookup` | `customer.name` → `customer_id` |
+| **ditolak** | tanpa `select`, dengan `why_not` | `outstanding` |
+
+`why_not` adalah kalimat yang **dibaca orangnya di pemilih kolom**, di tempat ia mencari kolom itu.
+Katalog yang diam-diam menghilangkan kolom "Sisa" membuat orang menjumlahkan "Total" dan menyangka
+itu sisa tagihan. `ReportableResourcesTest` memaku kesetaraan kunci **dan urutannya** terhadap
+`schema.js` di kedua arah, `select` terhadap skema hidup, `soft_deletes` terhadap ada-tidaknya
+`deleted_at`, izin terhadap `PermissionSeeder`, dan `date_column` terhadap `meta.date_column`
+endpoint daftarnya sendiri.
+
+**Aturan mesin** (`Modules\Core\Services\ReportRunner`, dijaga `ReportRunnerSafetyTest`):
+
+- **Tidak ada string klien yang menjadi teks SQL.** Identifier hanya dari registri, melewati
+  `guardIdentifier()`; nilai selalu binding. Tidak ada `whereRaw`/`havingRaw`/`orderByRaw`/`fromRaw`/
+  `DB::select` — hanya `selectRaw`/`groupByRaw` dengan string yang dibangun dari registri.
+- **ONLY_FULL_GROUP_BY.** Menyala di MySQL, tidak di SQLite. Setiap ekspresi select bukan-agregat
+  masuk `GROUP BY` **byte-identik**; `compile()` diekspos supaya ujinya menyapu setiap sumber ×
+  dimensi × ember × agregat tanpa MySQL.
+- **Ember tanggal `substr`.** `MONTH()`/`DATE_FORMAT` MySQL saja; `strftime` SQLite saja **dan**
+  dipindai terlarang `MysqlPreflightCommand`. Ember **harian** pun memotong (`substr(col,1,10)`):
+  kolom `date` terbaca `'2026-03-25 00:00:00'` di SQLite dan `'2026-03-25'` di MySQL.
+- **SoftDeletes dengan tangan.** `DB::table` melewati scope-nya.
+- **Pengurutan di PHP**, bukan `orderByRaw` — ≤ 200 kelompok, dan satu tempat lagi yang tidak
+  menjadi teks SQL.
+
+**Tiga keadaan sel, dan ketiganya berbeda** (syarat "sel kosong, bukan 0"):
+
+| keadaan | JSON | layar | XLSX |
+|---|---|---|---|
+| tidak ada baris sumber | `cells[i] = null`, `counts[i] = 0` | `—` | sel kosong |
+| ada baris, agregat NULL | `cells[i] = null`, `counts[i] > 0` | `—` | sel kosong |
+| nol yang dijumlahkan | `cells[i] = 0.0` | `0` | `0` |
+
+`array_key_exists`, tidak pernah `?? 0` dan tidak pernah `empty()`. Aturan sel XLSX punya **satu
+pemilik**: `Modules\Core\Support\XlsxSheetWriter::putRow` (`$value !== null && $value !== ''`,
+perbandingan KETAT — `empty()` menulis sel kosong untuk setiap nol yang sah).
+
+**Setiap saringan memeriksa NILAInya, bukan hanya kuncinya.** Saringan ber-`kind: 'key'` menuntut
+nomor baris; saringan ber-`kind: 'enum'` menuntut nilai yang benar-benar ada di enum-nya (dibaca
+`SpaEnums`, berkas `enums.js` yang sama dengan layarnya) dan menolak dengan menyebut yang tersedia.
+Tanpa lengan kedua, sebuah status yang sudah dicabut lolos ke `where status = 'x'`, laporannya
+kembali kosong tanpa satu kata pun, dan definisi itu bisa DISIMPAN lalu dibagikan — saringan yang
+diam-diam tidak cocok dengan apa pun adalah kebohongan yang paling sulit dilihat. `enums.js` yang
+tidak terbaca menurunkan aturan ini menjadi "terima apa adanya" (degradasi SpaEnums), bukan
+menolak semuanya.
+
+**Saringan yang layar tidak punya kendalinya tetap PUNYA SUARA.** Laporan tersimpan boleh membawa
+saringan ber-FK (pemilihnya ditunda ke v2) atau nilai enum yang sudah dicabut; layar menggambarnya
+sebagai keping berlabel `labelFor()`/`enumLabel()` dan kartu hasil menuliskan `Disaring: …`.
+Angka yang merupakan himpunan bagian karena saringan tak terlihat adalah kebohongan sejenis dengan
+sel 0 yang seharusnya kosong.
+
+**Baris SENDIRI selalu terlihat pemiliknya**, juga setelah izin sumbernya dicabut — ditandai
+`readable: false`, dengan Buka/XLSX/Salin tertutup dan sebabnya tertulis. Kalau tidak, tidak ada
+satu pun cara membuangnya: barisnya hilang dari daftar sementara DELETE atas id-nya tetap berhasil.
+
+**Plafon DIUMUMKAN, dan ia PENOLAKAN bukan pemotongan.** 5.000 baris rincian / 200 kelompok, di
+`meta.limits` (aturan yang sama dengan `meta.sortable` dan `UserPreferences::describe()`); SPA
+membacanya, tidak menghafalnya. Melewatinya dijawab 422 — SUM atas 200 dari 340 kelompok adalah
+angka salah yang berpakaian angka benar.
+
+**Berbagi per peran menyimpan NAMA.** Ini rujukan peran pertama di seluruh basis data ini: id tidak
+bisa membawa FK (peran milik Iam, tabel milik Core — §3), nama adalah yang sudah diseberangkan ke
+klien dan yang dibaca `hasRole()` yang tidak pernah melempar. Penulisan divalidasi terhadap peran
+yang hidup (berbagi tidak pernah **lahir** basi); peran yang kemudian diganti nama **ditandai** di
+daftar, bukan diam-diam berhenti berbagi. Dua aturan yang tidak boleh dilanggar: **berbagi tidak
+pernah memberi akses baru** (laporan tetap disaring izin sumbernya), dan **hanya pemilik yang
+mengubah**, tanpa jalan pintas admin, ditolak **422 dari service** dengan kalimat yang menyebut
+laporannya, pemiliknya, dan jalan keluarnya — bentuk `PettyCashVoucherService::assertCustodian`.
+
+**Blok migrasi.** `core_saved_reports` mengambil **000197**. Ledger #5 menyarankan "Core 001400–",
+tetapi §2 sudah memberikan 001400–001499 kepada Quality dan Quality memakainya sejak 001400 —
+saran itu **tidak diikuti**. Core menyisakan **000198 dan 000199**; blok lanjutan Core perlu
+diputuskan sebelum tabel Core berikutnya.
+
+## 19. Papan kanban — blok `board:` (P1-G)
+
+Tampilan KEDUA atas daftar yang sudah ada, di rute `#/b/<resource>`. Gerbangnya persis gerbang
+layar daftarnya (`def.viewPerm || `${def.module}.view``) — papan bukan data baru.
+
+**SATU ATURAN MENENTUKAN SELURUHNYA: drop menjalankan aksi yang SUDAH ADA lewat `runAction()`,**
+jalur yang sama persis dengan tombol di halaman dokumen. Bukan endpoint baru, bukan `PUT {id}` yang
+menulis status, bukan salinan aturan transisi. Yang ikut secara gratis karena itu: catatan
+persetujuan inline, maker-checker, `confirmResubmit` bertingkat, dialog alasan wajib pada Tolak,
+toast berbahasa Indonesia yang menyebut kode dokumennya, dan tawaran "dokumen berikutnya" setelah
+menyetujui. Papan yang menulis statusnya sendiri kehilangan keenamnya sekaligus, diam-diam.
+
+```js
+board: {
+  enum: 'documentStatus',                    // enum status; kolom dilabeli darinya
+  lanes: ['draft', 'submitted', 'approved', 'rejected'],
+  moves: { submitted: 'submit', approved: 'approve', rejected: 'reject' },
+  why: '…',                                  // kenapa resource INI yang berpapan
+}
+```
+
+`lanes` adalah nilai status yang **benar-benar tercapai** — `documentStatus` punya enam nilai dan
+hampir tidak ada dokumen yang mencapai semuanya; kolom yang tidak pernah terisi hanya mengambil
+ruang. `moves` memetakan **kolom tujuan → kunci aksi**; kolom tanpa entri tidak menerima kartu.
+
+**DUA PENOLAKAN YANG BERBEDA, dan keduanya wajib ada:**
+
+1. **Yang bisa diketahui sebelum mencoba** — izin dan `when`. Predikatnya diambil UTUH dari
+   `actionButtons()`, dalam urutan yang sama (`session.can(action.perm)` lalu
+   `!action.when || action.when(row)`): papan yang memakai predikat kedua menawarkan perpindahan
+   yang tombolnya sendiri sembunyikan. Kartu kembali, dan kalimatnya menyebut dokumennya, kolom
+   tujuannya DAN aksi yang kurang — *"PR PR/2026/III/0002 tidak bisa dipindah ke Disetujui: aksi
+   Setujui tidak tersedia untuk Anda."*
+2. **Yang hanya bisa diketahui dengan mencoba** — maker-checker, tangga persetujuan, ambang
+   direktur, prasyarat BAST. Tidak satu pun ada di muatan daftar (`approvals` di-load hanya pada
+   detail; tidak ada medan `can_approve` di mana pun). Papan **tidak boleh menebaknya**: ia mencoba,
+   `runAction` menampilkan kalimat servernya, dan kartunya kembali.
+
+**Mengembalikan kartu adalah pekerjaan tangan.** SortableJS tidak punya API batal — `onEnd` menyala
+SETELAH DOM dipindahkan, dan tidak satu pun metode instansnya mengembalikannya. Satu-satunya jalan
+adalah idiom pustakanya sendiri: simpan tetangga di kolom asal **sebelum** apa pun yang bisa gagal,
+lalu `insertBefore` / `appendChild`. Karena itu pula `sort: false` — papan ini tentang KOLOM, dan
+membiarkan pengurutan di dalam kolom menambah satu bentuk pembatalan lagi yang indeksnya bergeser.
+
+**`runAction` selalu resolve `undefined` dan tidak pernah melempar**: batal, 422 dan berhasil tidak
+bisa dibedakan dari nilai kembaliannya. Yang menandakan berhasil hanyalah `onDone` yang menyala —
+papan memasang bendera di dalamnya dan mengembalikan kartu bila bendera itu tidak menyala. Karena
+`onDone` **dilewati** untuk aksi ber-`navigateTo`/`navigateToResult`, aksi seperti itu tidak boleh
+menjadi `moves` (dipaku `BoardWiringTest`).
+
+**Yang TIDAK boleh berpapan** (dipaku uji): resource yang salah satu aksinya memposting ke buku
+besar atau ke stok. Aturannya tentang **akibat**, bukan tentang kunci — lima resource
+menyembunyikan posting di balik kunci bernama `approve`/`acknowledge`
+(`inventory/stock-adjustments`, `finance/ar-invoices`, `finance/ap-bills`, `hr/payroll-runs`,
+`servicedesk/field-reports`). Aksi ber-`opens` juga tidak: ia tidak punya `path` dan tidak pernah
+POST.
+
+**Menambahkan papan** = satu blok `board:` di entri RESOURCES + satu baris NAV `b/<key>`.
+`BoardWiringTest` memeriksa sisanya: kolom adalah nilai enum sungguhan, setiap `moves` menunjuk
+kolom papan itu DAN kunci aksi yang ada, aksinya punya `path` dan tidak berpindah halaman, dan
+tidak satu pun resource yang memposting.
+
+## 20. Tab "Jadwal" — gantt baca-saja atas WBS (P1-H)
+
+`public/app/js/views/jadwal.js` menggambar gantt proyek dengan `charts.js ganttChart()` (§11).
+Ia **tidak menambah satu endpoint pun**: seluruh layarnya berdiri di atas dua yang sudah ada,
+`projects/{id}/wbs-tasks` (pohon hidup) dan `projects/baselines` → `projects/baselines/{id}`
+(rencana beku). Yang menjadi aturan — bukan detail implementasi — adalah dari mana setiap medan
+baris itu datang.
+
+**BASELINE DICOCOKKAN LEWAT `wbs_code`, TIDAK PERNAH LEWAT `wbs_task_id`.**
+`prj_baseline_tasks.wbs_task_id` sengaja tanpa FK: baris beku harus bertahan meski tugas hidupnya
+dihapus, karena lingkup yang dihapus sesudah rencana disepakati adalah hal paling penting yang bisa
+dilaporkan sebuah laporan deviasi. Akibatnya id itu **menggantung**, dan bukan sesekali:
+`ProjectService::generateWbsFromBoq` MENGHAPUS seluruh WBS lalu membuatnya ulang dengan id baru
+setiap kali "Buat WBS dari BOQ" ditekan. Diukur `JadwalGanttTest` terhadap layanan yang sungguhan —
+sesudah **satu** kali tekan, **0 dari 11** id beku menemukan tugas hidup sementara **11 dari 11**
+`wbs_code` cocok; berkas demo yang dikirim repositori ini punya bentuk yang sama (id beku 12–22, id
+hidup 34–44). Jadi mencocokkan lewat id bukan "kurang aman" — ia menghasilkan gantt tanpa satu pun
+bar pembanding, dan kaki kartu yang mengumumkan "0 dari 11 tugas cocok" untuk baseline yang
+disetujui dan lengkap.
+
+Satu-satunya tempat lain yang masih memakai id adalah `EvmService::physicalProgress`, yang mencoba
+id **dulu** lalu jatuh ke kode. Perbedaan itu disengaja (kode WBS yang diganti nama adalah tugas
+yang sama, dan di situ id-lah yang benar) dan pada data hari ini keduanya memberi hasil yang sama
+justru karena setiap id meleset. Sejak P1-H ketidaksepakatan antara keduanya **disebut**: bila id
+beku menunjuk tugas hidup berkode lain, laporan EVM memuat peringatan yang menyebut kedua kodenya.
+Tidak ada FK yang bisa mencegah keadaan itu, jadi yang dijamin adalah ia tidak pernah diam.
+
+**Kode WBS tidak dijamin unik.** Indeks `(baseline_id, wbs_code)` bukan `unique` dan validasinya
+hanya `required|string|max:20`. Peta di jadwal.js diam-diam menyimpan yang terakhir, jadi
+tabrakannya DIHITUNG dan disebutkan di bawah gantt. Angka yang salah yang mengaku dirinya salah
+lebih baik daripada angka yang salah dan diam.
+
+**Urutan baris diambil dari SARANGNYA, bukan dari muatan baseline.** Muatan beku diurutkan
+`(sort_order, wbs_code)`, yang menyelang-nyeling induk dan anak dari cabang berbeda (A, A.1, B.1,
+C.1, A.2, B, …); menggambar dalam urutan itu menghasilkan gantt acak. `prj_wbs_tasks` tidak punya
+kolom level/depth, jadi kedalamannya dihitung dari sarang sisi hidup.
+
+**Endpoint pohon mengirim SELURUH pohon.** `WbsTaskController::index()` merakit sarangnya dari satu
+kueri, tanpa batas kedalaman, dan setiap baris membawa `children` (kosong bila daun). Batas tiga
+tingkat yang lama (`with('children.children')`) benar untuk WBS dari BOQ dan salah untuk pintu kedua
+ke tabel yang sama: `MppXmlImportService` menerima OutlineLevel sedalam apa pun, jadi jadwal empat
+tingkat kehilangan seluruh tingkat keempatnya — tidak digambar gantt, tidak muncul di tabel WBS, dan
+induk tingkat tiganya tampil sebagai daun bertombol "Perbarui" yang pasti ditolak server. **Sebuah
+jadwal yang diam-diam kehilangan paket pekerjaan terlihat persis seperti jadwal yang benar.**
+Sejak verifikasi 7 Sep 2026 janji itu juga berlaku untuk **siklus `parent_id`** (B.3 ↔ B.3.1 —
+FK mengizinkannya, kedua baris ada): dulu anggota siklus tidak pernah menjadi akar dan tidak
+pernah terjangkau dari akar mana pun, jadi 13 baris tersimpan berangkat sebagai 10. Perakitannya
+kini menelusuri dari akar dengan himpunan "sudah dikirim" lalu MENGANGKAT sisanya menjadi akar
+(sisi belakang siklus dipotong, jadi setiap baris muncul tepat sekali). Letak baris itu di pohon
+memang berubah, dan karena itu ia DISEBUT: `meta.parent_cycles` memuat kodenya dan jadwal.js
+mencetaknya di bawah gantt.
+
+**Garis "Hari ini" datang dari SERVER.** `GET {project}/wbs-tasks` mengirim `meta.as_of` +
+`meta.as_of_source: 'server'` — kanal yang sama dengan `DeadlineController` dan `EvmService` — dan
+jadwal.js mengoperkannya ke `ganttChart({ today })`. Tanpa itu charts.js jatuh ke `localToday()`,
+yaitu jam PERAMBAN: diukur 7 Sep 2026 pada berkas dan jam server yang sama, garisnya berpindah
+mengikuti timezone pembacanya (Asia/Jakarta x=484,67 vs America/Los_Angeles x=483,27; diukur
+dengan kolom label 180, sebelum kolomnya dilebarkan). Aturan
+tertulis aplikasi ini berlawanan dengan itu — EvmService: *"an EVM report keyed off a skewed PC
+clock manufactures schedule variance out of nothing"* — dan garis "Hari ini" pada gantt adalah
+pembacaan keterlambatan yang persis sama, hanya dengan mata. Dua peramban dengan timezone
+berjarak 25 jam (Pacific/Niue dan Pacific/Kiritimati, tidak pernah setanggal) mengukurnya di
+S26_gantt_jam_server; harness juga menghitung harapannya dari `meta.as_of`, bukan dari jam
+mesinnya sendiri — aplikasi berjalan di Asia/Jakarta sementara host harness UTC, jadi jam mesin
+berselisih sehari dengan server selama tujuh jam setiap hari.
+
+**Satuan.** `progress_pct` berjalan di kawat sebagai 0..100 dan sebagai *string* ('60.0000');
+`ganttChart` menerima 0..1. Pembagian 100 di jadwal.js bukan kosmetik — tanpa itu setiap bar terbaca
+100 %. Nilai di luar rentang tidak dijepit di jalur baca: gantt menjepit barnya sendiri lalu menulis
+"(di luar 0–100 %)" di `<title>`, yang hanya mungkin bila angka aslinya sampai ke peramban.
+
+**Ketergantungan antar tugas tidak digambar**, dan legenda di kaki kartu mengatakannya: kolomnya
+belum ada di basis data dan impor MPP-XML mengabaikan `PredecessorLink` (ROADMAP menunda ini ke
+Fase 2). Garis yang digambar dari kolom yang tidak ada adalah jadwal karangan.
+
+**Cetak.** Lembar gantt memakai `@page` **bernama** (`@page gantt { size: A4 landscape }` +
+`.gantt-sheet { page: gantt }`), tidak pernah `@page` telanjang: satu stylesheet melayani 16 layar
+yang memanggil `window.print()` dan semuanya tabel potret. Bilah zoom disembunyikan di kertas, judul
+kartu dan catatan sumber di dalam svg tidak — merekalah yang memberi tahu pembaca kertasnya apa yang
+sedang ia lihat. Diukur S26: PDF Chromium memberi halaman 792×612 pt (lanskap) untuk lembar itu dan
+612×792 pt (potret) untuk sisanya — yang dibuktikan angka itu adalah ORIENTASINYA, bukan ukuran
+kertasnya: 792×612 pt adalah US Letter lanskap, dan yang memilih kertas adalah dialog cetak
+(bawaan `page.pdf()` di harness), bukan `size: A4` di stylesheet.
+
+**Jadwal yang lebih tinggi daripada satu kertas DIPOTONG SENDIRI menjadi beberapa svg.** Sebuah
+`<svg>` tidak bisa dipaginasi: diukur 7 Sep 2026 pada jadwal 66 baris, satu gambar besar memberi
+halaman kosong, satu baris terbelah di batas halaman, dan tiga dari empat halaman gambar tanpa
+satu pun sumbu tanggal. `jadwal.js` karena itu menggambar satu svg per 16 baris untuk kertas —
+masing-masing dengan pita bulan, tick, garis "Hari ini" dan legendanya sendiri, dan semuanya
+memakai `from`/`to` yang SAMA supaya skalanya sebanding — lalu menyembunyikan gambar layarnya
+(`.gantt-sheet.is-paginated .chart-scroll`). Kaki setiap halaman menyebut "halaman n dari m,
+baris a–b dari N".
+
+**Gerbang izin.** Ketiga GET layar proyek (`{project}/wbs-tasks`, `/s-curve`, `/dashboard`) menuntut
+`permission:prj.view`, sama dengan `{project}/evm` dan `projects/baselines`. Sampai P1-H gerbang itu
+hanya ada di app.js — separuh tab Jadwal dijaga server dan separuhnya tidak.
+
+**Pohon WBS punya SATU pintu**, `{project}/wbs-tasks`, dan itu bukan kerapian melainkan syarat
+gerbang di atas. `GET projects/{project}` dulu membawa salinan kedua pohon itu (`wbs_tasks` di
+`ProjectResource`) sementara rutenya sendiri berjalan di bawah `auth:sanctum` saja: diukur 7 Sep
+2026, peran tanpa satu pun izin `prj.*` (finance, teknisi, hr, procurement) mendapat 403 dari
+pintu yang bergerbang dan 200 di sana — lengkap dengan kode, uraian, bobot, tanggal rencana dan
+progres setiap paket. Salinan itu juga PENDEK (11 dari 13 baris pada pohon empat tingkat) dan
+tanpa kunci `children`. Muatan proyek karena itu tidak lagi membawa pohonnya sama sekali. Aturan
+umumnya: sebuah medan yang digerbangi di satu rute tidak boleh menumpang di rute lain yang tidak
+digerbangi — gerbang yang bisa diputari bukan gerbang.
+
+## 21. PWA — manifest & service worker (P1-I)
+
+Dua berkas statis di `public/app/`, dilayani tanpa satu baris pun konfigurasi server baru:
+`manifest.webmanifest` dan `sw.js`. nginx sudah melayani `/app/` dengan
+`try_files $uri $uri/index.html =404` dan `Cache-Control: no-cache`, dan `deploy/sync-erp1.sh`
+sudah menyalin seluruh `public/`.
+
+**Lingkup worker adalah `/app/`, dan itulah seluruh aturannya.** Sebuah service worker hanya boleh
+menguasai path di bawah folder skripnya, jadi `sw.js` yang duduk di `/app/sw.js` tidak bisa
+menyentuh `/api/`, `/storage/`, atau apa pun di luar cangkang — bahkan bila seseorang menuliskan
+kodenya. Itu bukan kebetulan yang beruntung, itu alasan berkasnya diletakkan di sana.
+
+**ATURAN "TIDAK PERNAH DI-CACHE".** Worker MENJAWAB sebuah permintaan hanya bila SEMUA benar:
+(1) metodenya `GET`; (2) asalnya sama dengan asal worker; (3) path-nya diawali lingkup worker
+(`/app/`); (4) tanpa header `Authorization`; (5) bukan `/app/sw.js` sendiri. Yang lain lewat
+**tanpa `respondWith()` sama sekali** — peramban mengambilnya seolah tidak ada worker. Yang boleh
+MASUK cache lebih sempit lagi: hanya jawaban `200` bertipe `basic`.
+
+Bentuknya **daftar izin, bukan daftar larangan**, dan itu keputusan sadar. Daftar larangan
+(`if (url.pathname.startsWith('/api/')) return;`) membusuk pada endpoint berikutnya yang lupa
+didaftarkan, dan kegagalannya diam: tablet lapangan yang dipakai bergantian akan menyajikan daftar
+dokumen milik orang sebelumnya, tanpa satu pun pesan galat, sampai ada yang menyadarinya. Satu
+awalan tidak bisa membusuk begitu. `tests/Feature/Core/PwaServiceWorkerTest` memaku kelima syarat
+itu, memaku bahwa hanya ada SATU `respondWith()` dan SATU `cache.put()`, dan memaku bahwa kode
+(tanpa komentar, tanpa daftar `SHELL`) tidak menyebut `/api`, `storage`, `attachment`, `lampiran`,
+`download` atau `unduh` sama sekali — **munculnya daftar larangan di sana adalah kegagalan uji.**
+
+Uji itu memaku **bentuk, bukan ejaan**: badan `shellRequest()` dan `storable()` dibandingkan UTUH,
+tulisan cache dihitung sebagai pola `\w+.put(`/`\w+.add(` (bukan nama variabel `cache`), dan DAFTAR
+pendengar worker dipaku persis — **empat sampai P-3e, tujuh sesudahnya** (`install`, `activate`,
+`fetch`, `message`, dan `push`, `notificationclick`, `pushsubscriptionchange`). Alasannya terukur:
+versi pertama yang menghitung potongan teks meloloskan empat mutasi yang benar-benar membocorkan
+cache — antara lain pendengar `fetch` KEDUA yang menulis lewat `store.put()` tanpa satu pun
+`respondWith()`, yang di peramban menyajikan `/api/core/dashboard/summary` kepada orang berikutnya
+di perangkat yang sama, sesudah Keluar, tanpa token. **Menambah pendengar berarti menambah ujinya**,
+dan P-3e membayarnya: menaikkan angka empat → tujuh disertai pin baru yang membaca **badan ketiga
+pendengar web push satu per satu** dan menolak `caches`, tulisan `.put(`/`.add(`, dan permintaan ke
+`/api` di dalamnya. Muatan push membawa judul dan isi pemberitahuan seseorang; sebuah `cache.put()`
+di pendengar `push` adalah kebocoran yang sama persis dari pintu yang baru.
+
+**Strateginya jaringan-dulu.** Cache dibaca HANYA ketika `fetch()` melempar. Jawaban HTTP yang sah
+tetapi tidak menyenangkan (404 sesudah rilis membuang berkas, 401 dari gerbang HTTP) diteruskan apa
+adanya, tidak ditutupi salinan lama. `fetch()` juga **dimulai sebelum cache dibuka** — cache hanya
+dibuka ketika ada yang perlu disimpan (di dalam `waitUntil`) atau ketika fetch melempar. Urutan
+sebaliknya membuat ke-76 permintaan cangkang menunggu satu `caches.open` masing-masing sebelum satu
+byte pun diminta; terukur pada kunjungan kedua, 14 putaran per varian yang diselang-seling, cat
+pertama median 268 ms lawan 192 ms. Uji memaku urutan itu.
+
+**Cangkang setengah dibuang.** Bila satu saja entri `SHELL` gagal dipasang, seluruh cache dibuang
+(`caches.delete(CACHE)`) — install-nya sendiri tetap berhasil, jadi tidak ada pembaruan yang beku.
+Alasannya terukur dengan kuota origin 1,2 MB (cangkang ~2,1 MB): 42 dari 102 entri masuk, daring
+semuanya baik-baik saja, lalu muat ulang tanpa jaringan berhenti selamanya di pemutar boot dengan
+body kosong. **Cangkang setengah lebih buruk daripada tidak ada cangkang.** Jaring keduanya ada di
+`index.html`: pengawas boot sebaris — satu-satunya kode di sana yang tidak butuh berkas lain —
+mengganti pemutar dengan kalimat dan tombol "Muat ulang" bila sebuah `<script>` gagal atau boot
+belum selesai dalam 10 detik.
+
+**`SHELL` adalah daftar dua arah.** Ia memuat `'./'` + setiap berkas `html/css/js/svg/webmanifest`
+di bawah `public/app` (folder `icons/` tidak masuk — itu dibaca sistem operasi, bukan halaman; dan
+`sw.js` tidak pernah men-cache dirinya sendiri). Uji menolak baris yang berkasnya hilang **dan**
+berkas yang tidak terdaftar. Jadi: **setiap layar baru menambah satu baris di `SHELL`** — kalau
+tidak, aplikasi tetap jalan daring dan setengah mati saat luring, yang tidak akan terlihat siapa pun
+sampai seseorang membuka ponselnya di lokasi tanpa sinyal.
+
+**Menaikkan versi cache.** `const SHELL_VERSION = '1';` di kepala `sw.js`. Naikkan pada setiap rilis
+yang mengubah berkas cangkang. Peramban membandingkan **byte** `sw.js`, jadi mengubah angka itulah
+satu-satunya hal yang membuat worker baru dipasang — dan karena itu satu-satunya hal yang
+memunculkan toast "Versi baru siap — Muat ulang" di tab yang sudah terbuka berhari-hari. Rilis yang
+lupa menaikkannya tidak menyesatkan siapa pun (jaringan-dulu tetap menyajikan kode terbaru kepada
+siapa saja yang memuat ulang), ia hanya tidak mengumumkan dirinya. `activate` membuang setiap cache
+`nusantara-shell-*` yang bukan versi berjalan.
+
+**Warna.** `manifest.webmanifest` hanya boleh punya SATU `theme_color` dan SATU `background_color`,
+dan keduanya dipakai layar splash sebelum dokumen ada — jadi keduanya nilai tema **terang**
+(`--primary` `#1a56db` dan `--bg` `#f4f6f8`). Yang bisa bermedia adalah `<meta name="theme-color">`,
+dan index.html memasangnya **berpasangan** dengan nilai `--surface` kedua tema (`#ffffff` /
+`#151a21`) — `--surface`, bukan `--bg`, karena bilah peramban duduk persis di atas `.header`.
+`PwaManifestTest` membaca app.css dan menuntut keempat nilai itu sama persis dengan tokennya.
+
+**Ikon dibangkitkan, tidak digambar ulang.** `docs/bukti-uji/buat-ikon-pwa.py` memotret
+`public/app/favicon.svg` dengan Chromium milik harness (tidak ada rasterizer di host ini dan paket
+ini tidak menambah dependensi). Ukuran yang DIUMUMKAN manifest dipaku terhadap IHDR berkasnya:
+manifest yang menulis `512x512` di atas berkas 192 px tidak pernah terlihat sampai ikonnya buram di
+layar utama orang lain.
+
+**Pita luring.** `ui.offlineRibbon()` membaca DUA sumber: `navigator.onLine` **dan** peristiwa
+`erp:network` yang diumumkan `api.js` ketika sebuah transport gagal (fetch melempar, XHR status 0).
+`navigator.onLine` sendiri tidak cukup — Wi-Fi lokasi di balik portal dan 4G satu bar sama-sama
+melaporkan `true`. HTTP 500 **bukan** luring: server menjawab. Pita padam pada peristiwa `online`
+atau pada permintaan berikutnya yang berhasil — paling lambat polling notifikasi 90 detik. Ia
+sengaja tidak menyelidik jaringan sendiri: lalu lintas latar dari ponsel lapangan berkuota adalah
+biaya nyata untuk informasi yang akan datang sendiri.
+
+Dua sumber berarti dua ingatan, dan **keduanya harus dilupakan oleh peristiwa yang sama**: `api.js`
+menyetel ulang `lastNetworkOk` pada `online`, persis seperti `ui.js` menyetel ulang
+`networkTrouble`. Tanpa itu urutan luring → gagal → `online` meninggalkan `api.js` mengingat "sudah
+diumumkan luring" sementara `ui.js` sudah melupakannya, sehingga setiap kegagalan berikutnya kena
+dedupe dan pita tidak pernah menyala lagi — terukur: empat layar berturut yang seluruh
+permintaannya gagal, `navigator.onLine` true, pita padam, nol peristiwa. Itu justru kasus yang pita
+ini ada untuk melaporkannya.
+
+Kalimat pita **milik pemanggil dan boleh berupa fungsi**, dibaca ulang setiap kali pita menyala:
+layar Lapangan memilih antara "tekan Kirim ulang pada barisnya" (ada antrean) dan "foto yang Anda
+ambil sekarang tersimpan di ponsel ini" (antrean kosong). Pita yang menyuruh menekan tombol yang
+tidak ada di layar lebih buruk daripada pita yang diam.
+
+**Toast yang bertahan (`timeout: 0`) harus dipegang.** Dua di paket ini: "Versi baru siap" dibuang
+sebelum yang baru dibuat (kalau tidak, satu toast permanen menumpuk per rilis di tab yang tidak
+pernah ditutup — terukur dua toast identik pada rilis kedua), dan "Mode luring" dibuang pada
+peristiwa jaringan pertama yang berhasil, sekalian menyegarkan sesi cermin (`refreshMe`,
+`prefs.load`, `refreshNav`). Penyegaran yang gagal MEMBIARKAN toast lama berdiri: saat itu
+kalimatnya masih benar.
+
+**Mencabut worker.** Worker adalah satu-satunya artefak paket ini yang menetap di setiap peramban
+yang pernah membuka `/app/`, jadi "bagaimana mengambilnya kembali" adalah pertanyaan operasional
+yang harus punya jawaban tertulis: **DEPLOYMENT § 2.3**. Ringkasnya — **menghapus `sw.js` tidak
+mencopot apa pun** (terukur: sesudahnya worker tetap terdaftar, tetap menguasai halaman, cache tetap
+utuh, dan `update()` melempar), yang bekerja adalah **mengganti isinya** dengan pencabut yang
+menghapus cache dan memanggil `self.registration.unregister()`.
+
+## 22. Matriks persetujuan (`ApprovalPolicy`, F-1)
+
+Satu kebijakan per jenis dokumen di `ApprovableDocuments` — **ambang**, **mode**
+(`single_director` / `extra_level`), **ambang tingkat ketiga** — disunting di
+Pengaturan › Matriks Persetujuan dan disimpan lewat mekanisme setelan yang sudah
+ada (`approvals.*` di `core_settings`). Bukan mekanisme kedua: baris PO dan SPK
+menulis `approvals.purchase_order/subcontract.threshold_two_level`, **kunci yang
+sudah dibaca `needs_director_approval`**, jadi tidak ada dua angka yang bisa
+berbeda pendapat tentang ambang yang sama.
+
+**Slug jenis dokumen = `Str::snake(class_basename($model))`** — dan itu bukan
+kebetulan: kedua kunci yang sudah dikirim aplikasi ini persis bentuk itu. 28
+jenis diperiksa, tidak ada dua yang bertabrakan.
+
+**LIMA ATURAN YANG MENENTUKAN BENTUK LAYARNYA.**
+
+1. **Bawaan = nilai HARI INI.** Sebuah paket yang menambahkan layar tidak boleh
+   mengubah satu pun keputusan saat dipasang. Yang dikirim: PO Rp 100 juta, SPK
+   Rp 200 juta, addendum mengikuti SPK, award Rp 100 juta / Rp 1 miliar
+   berjenjang, dan **24 jenis lain tanpa ambang**.
+2. **"Tanpa ambang" adalah `null` dan dirender sebagai ATURAN — tidak pernah
+   `Rp 0`.** Ambang nol berarti setiap dokumen menuntut direktur, kebalikan
+   persis keadaannya, dan satu-satunya angka yang bisa mengubah aturan uang
+   tanpa seorang pun mengetiknya.
+3. **Jenis TANPA kolom nilai tidak mendapat sel ambang sama sekali.** Tiga belas
+   dari dua puluh delapan (izin kerja lapangan, izin lembur, izin masuk/keluar
+   material, BAST, baseline proyek, opname progres owner, IPP, inspeksi mutu,
+   pekerjaan tambah-kurang, permintaan pembelian, penyesuaian stok, BAST subkon,
+   pengajuan cuti — diukur dari skema 7 Sep 2026). Sebuah izin kerja lapangan
+   tidak berharga rupiah; menawarkan kotak isian di sana berarti menawarkan
+   kendali yang tidak akan pernah berbunyi. Lihat
+   `ApprovalPolicy::hasMeasurableAmount`.
+4. **Tiga tabel yang membawa `needs_director_approval` sendiri** (`prc_purchase_orders`,
+   `scm_subcontracts`, `scm_subcontract_addenda`) **tidak mendapat sel MODE**, dan
+   Core tidak menggerbangi ulang dokumennya: modul merekalah yang menegakkan,
+   lebih dulu, dengan kalimat penolakannya sendiri. Pertanyaan "tabel ini
+   bergerbang sendiri?" dijawab dari **skema** (`Schema::hasColumn`), bukan dari
+   daftar kelas yang harus diingat orang berikutnya.
+5. **Baris yang MENGIKUTI jenis lain memantul ke kunci jenis itu**
+   (`ApprovalPolicy::FOLLOWS`). Hari ini satu: addendum SPK menghitung
+   `needs_director_approval`-nya terhadap ambang SPK, jadi kunci sendiri untuknya
+   berarti sel yang bisa diedit dan tidak ada yang membacanya.
+
+**KEBIJAKAN DISTEMPEL PADA BARIS `submitted`** (`core_approvals.policy`, json).
+Yang dicap bukan hanya kebijakannya melainkan HASILNYA (`levels`, `director`)
+beserta nilai dokumennya, jadi saat menyetujui tidak ada yang perlu dihitung
+ulang. Sebelum ini, jenjang dibaca langsung dari config setiap kali seseorang
+menekan Setujui — menaikkan ambang siang hari MENGURANGI tuntutan setiap dokumen
+yang sedang menunggu, surut dan tanpa jejak. Stempelnya ditulis observer
+`Approval::creating` (`ApprovalStamp`), **bukan** baris di dalam
+`Traits\Approvable`: Payment, ProjectBaseline dan JournalService menulis baris
+persetujuan tanpa trait itu, dan jalur yang terlewat adalah jalur yang dicari
+sebuah penyelidikan. Dokumen yang diajukan sebelum kolomnya ada tidak punya
+stempel dan jatuh ke resolusi langsung — maju-saja, tidak pernah ditulis surut.
+
+**MENGUBAH `approvals.*` BUTUH DUA IZIN**: `core.update` **dan** salah satu
+`*.approve-director`. Ditegakkan di `UpdateSettingsRequest` (422 per-parameter,
+kalimat Indonesia) **dan lagi** di `SettingService::set()`, jadi memanggil
+service langsung bukan jalan memutar. Penulisan tanpa pengguna masuk (seeder,
+migrasi, konsol) tetap lewat: yang dijaga adalah ORANG. Setiap perubahan menulis
+satu baris `core_audit_log` dengan nilai **efektif** dari → ke — termasuk reset
+ke bawaan, yang tanpa ini hanya tercatat sebagai baris dihapus.
+
+**IZIN DIREKTUR DITURUNKAN, BUKAN DIKETIK.** `PermissionSeeder::directorApprovals()`
+mencetak satu `<awalan>.approve-director` per awalan yang memiliki setidaknya satu
+dokumen di `ApprovableDocuments` — sepuluh (crm, est, prj, eng, qc, prc, inv, scm,
+fin, hr). Empat awalan tanpa dokumen ber-approve (core, iam, ast, svc) tidak
+mendapatkannya: sebuah izin yang tidak diperiksa apa pun terbaca sebagai kendali
+yang ada.
+
+**Setujui massal** (`approvals.batch_cap`, bawaan kosong = mati) adalah **loop di
+klien** atas endpoint `POST <resource>/{id}/approve` milik tiap modul. Tidak ada
+endpoint server massal, dan ketiadaannya dipaku uji yang memindai tabel rute:
+satu endpoint massal akan melewati maker-checker, ambang direktur, jurnal, stok,
+catatan dan pemberitahuan sekaligus.
+
+**Blok migrasi Core HABIS.** 000198 dan 000199 adalah dua slot terakhir §2 (lihat
+§18). Tabel Core berikutnya menuntut keputusan blok lanjutan dari pemilik —
+ledger #5 belum menyebut satu pun rentang untuk Core.
+
+## 23. Delegasi persetujuan "a.n." (`core_approval_delegations`, F-1)
+
+Budi menyetujui atas nama Sari selama Sari cuti. Tanpa ini, cuti seorang direktur
+berakhir di antrean yang berhenti (diukur 4 Sep 2026: PAY/2026/VIII/0002 menunggu
+33 hari) atau kata sandi yang dipinjamkan, yang mengubah seluruh jejak persetujuan
+aplikasi ini menjadi fiksi.
+
+**Jendela TANGGAL, inklusif di kedua ujung** (Asia/Jakarta): "10 sampai 20
+September" berarti apa yang dikatakannya. `ends_at` null = sampai dicabut, dan
+layar mencetaknya sebagai delegasi tanpa akhir. **Lingkup** null = setiap hak
+approve yang DIPEGANG pemberinya; `'prc'` = hanya `prc.approve` /
+`prc.approve-director`. **Dicabut, bukan dihapus**: sebuah delegasi yang pernah
+hidup adalah penjelasan bagi setiap baris "a.n." yang ditinggalkannya.
+
+**`Gate::before` MENGEMBALIKAN `true` ATAU `null` — TIDAK PERNAH `false`.** Sebuah
+`Gate::before` yang mengembalikan `false` MENOLAK ability itu di seluruh aplikasi,
+mendahului setiap policy dan setiap middleware `permission:`. Polanya diperiksa
+SEBELUM satu baris pun dibaca dan hanya cocok pada `<awalan>.approve` /
+`.approve-director` dengan awalan yang benar-benar ada di registri.
+
+**DAN HANYA DI PINTU KEPUTUSAN DOKUMEN** (`honouredOnThisRequest`, ditambahkan
+pada putaran verifikasi F-1). Menyaring nama ability ternyata belum cukup: izin
+`<awalan>.approve` itu sendiri menggerbangi 71 rute, dan **15 di antaranya bukan
+approve/reject sebuah dokumen** — memposting jurnal manual, membuka kembali
+periode fiskal, menerbitkan nomor e-Bupot, `advance-payout` dan
+`retention-release` SPK, menutup proyek, verify/waive/reopen defect, close/reopen
+insiden K3, mengaktifkan kontrak, dua keputusan submittal, verifikasi NCR.
+Terukur: sebuah login `fin.view`+`fin.post` yang menutup periode 2026-06 ditolak
+403 saat membukanya kembali, lalu 200 sesudah menerima delegasi cuti biasa —
+mengalahkan aturan yang ditulis di komentar rutenya sendiri ("siapa pun yang bisa
+memposting tidak boleh bisa membuka sendiri periode yang ingin diisinya").
+Saringannya diturunkan dari BENTUK URI (`/{id}/approve`, `/{id}/reject`), jadi
+rute ke-16 tertutup secara bawaan. **Tanpa rute (konsol, antrean, panggilan
+langsung) delegasinya berlaku**, karena permukaan yang dijaga adalah permintaan
+web. Antrean persetujuan memanggil `ApprovalDelegations::grants()` LANGSUNG,
+bukan lewat `can()`: kotak masuk adalah bacaan, bukan pintu keputusan.
+
+**TIDAK BERANTAI.** Pemberinya harus memegang izinnya SENDIRI —
+`hasPermissionTo()`, bukan `can()`. Dua alasan, keduanya cukup sendirian:
+`can()` masuk lagi ke `Gate::before` dan siklus A→B, B→A akan menggantung proses;
+dan rantai tiga orang menyerahkan hak direktur kepada orang yang tidak pernah
+dipilih siapa pun.
+
+**DUA PENOLAKAN.** Delegat tidak boleh menyetujui yang diajukan DIRINYA
+(maker-checker lama) **maupun** yang diajukan PEMBERI delegasinya. Yang kedua
+dipasang DI DALAM `SegregationOfDuties::assertNotSubmitter`, tempat maker-checker
+sudah berdiri, jadi keempat pemanggilnya (trait `Approvable`, `BaselineService`,
+`PaymentService`, `JournalService`) mendapatkannya tanpa satu pun harus tahu
+delegasi itu ada.
+
+Yang kedua **hanya berlaku bila haknya memang dipinjam** (`refusesGiverSubmission`,
+disempitkan pada putaran verifikasi F-1). Ia dikirim lebih luas — berlaku bahkan
+bila delegatnya memegang hak itu sendiri — dengan alasan bahwa "hak yang mana yang
+dipakainya tadi" tidak dapat ditentukan sesudah kejadian. Alasan itu tidak benar:
+`actingForId()` menjawabnya secara deterministik dan sudah dipakai untuk mencap
+"a.n." pada jejak. Harganya terukur: pemakaian paling biasa dari fitur ini —
+pengaju menyerahkan haknya kepada penyetujunya sebelum cuti — membuat 2 dari 4
+baris antrean penyetuju itu tidak dapat disetujui; dan karena siapa pun boleh
+membuat baris yang menyebut dirinya sebagai pemberi, pengguna tanpa satu izin pun
+dapat **melumpuhkan seorang direktur** yang memegang haknya sendiri. Ketiga
+syaratnya sekarang harus benar sekaligus: pengajunya pemberi delegasi yang
+tercakup lingkupnya, pemberinya benar-benar memegang hak itu, dan penyetujunya
+TIDAK memegangnya sendiri (hak direktur ikut dihitung).
+
+Ia mengikuti saklar `approvals.segregation_of_duties` yang sama: mematikan
+maker-checker mematikan keduanya, karena aturan ini adalah maker-checker yang
+dilihat lewat delegasi. **Antrean memakai predikat yang sama**
+(`ApprovalQueue::pending`), supaya kotak masuk tidak menawarkan baris yang
+dijamin ditolak — sebelum ini 2 dari 4 baris antrean seorang delegat pada dataset
+demo dijamin gagal, lengkap dengan kotak centang "Setujui massal".
+
+**Delegasi dicabut oleh pemberinya, PENERIMANYA, atau pemegang `iam.update`.**
+Sebuah delegasi datang tanpa diminta, jadi ia harus bisa dikembalikan tanpa
+meminta tolong. Kolom `revoked_by` mencatat siapa — pencabutan oleh orang
+ketiga adalah persis kejadian yang ditanyakan sebuah penyelidikan, dan sebuah
+stempel waktu tanpa nama tidak menjawabnya.
+
+**`ApprovalDelegation` ADALAH MODEL YANG DIAUDIT** (`AuditedModels`), satu-satunya
+pengecualian dari "dokumen sengaja absen" di daftar itu: barisnya bukan dokumen,
+ia adalah izin dengan tanggal kedaluwarsa. F-1 mengaudit setiap perubahan
+`approvals.*` dari→ke, jadi ATURAN uangnya tercatat; tanpa baris ini, pemberian
+hak untuk menerapkan aturan itu tidak tercatat sama sekali. Judul barisnya
+adalah atribut turunan `audit_label` ("Sari → Budi (est)"), supaya log tetap
+terbaca sesudah kedua akunnya dihapus.
+
+**"a.n." DICAP HANYA BILA DELEGASINYA YANG MEMBUATNYA MUNGKIN**
+(`core_approvals.on_behalf_of_user_id`). Seseorang yang memegang izin approve-nya
+sendiri menyetujui atas namanya sendiri, punya delegasi atau tidak; mencap "a.n."
+pada persetujuan yang tidak membutuhkannya berarti menuliskan fiksi ke dalam
+jejak.
+
+**Dan ia ikut ke PEMBERITAHUAN yang sampai kepada pengaju** ("Budi a.n. Sari
+menyetujui …"), ditambahkan pada putaran verifikasi F-1. Jejak dan layar detail
+sudah benar sejak awal, tetapi pengaju tidak membuka layar detail untuk membaca
+jejak — yang dibacanya adalah satu kalimat di kotak masuknya, dan kalimat itu
+menyebut Budi saja. Namanya dibaca dari BARIS yang baru ditulis, bukan
+ditanyakan ulang kepada `ApprovalDelegations`: pendengarnya berjalan sesudah
+commit, dan sebuah fakta yang sudah tercatat tidak boleh dihitung ulang dengan
+delegasi yang mungkin sudah dicabut semenit kemudian.
+
+**Satu perender jejak, `Core\Http\Resources\ApprovalTrail`**, dipakai 25 resource.
+Penutup yang sama disalin byte per byte di 25 berkas sebelum F-1; selama tidak ada
+yang berubah itu tidak menyakiti siapa pun, tetapi sebuah fakta baru yang harus
+muncul di 25 tempat akan muncul di 24.
+
+**Memo delegasi adalah objek yang di-bind `scoped()`**, bukan statis — batas dan
+alasan yang sama dengan `SettingService`: satu unit kerja membaca satu potret,
+unit berikutnya membaca ulang. Memo statis akan membuat pekerja antrean memegang
+delegasi yang sudah dicabut sampai ia direstart.
+
+**Yang TIDAK bisa dicetak "a.n.": formulir rumah.** `FormPrintService` dan
+`PrintableDocuments` sengaja meninggalkan setiap kolom tanda tangan TANPA NAMA —
+"core_approvals tahu siapa menekan Setujui; itu bukan klaim yang sama dengan
+'orang ini menandatangani dokumen'". Keputusan itu tidak diubah F-1, jadi "a.n."
+muncul di jejak persetujuan, di pemberitahuan keputusan dan di layar detail —
+bukan di kertas yang difile orang.
+
+## 24. Registri ambang (`WatchedThresholds`, F-2)
+
+`Modules\Core\Support\WatchedThresholds` adalah saudara `WatchedDeadlines`:
+yang itu menjawab "tanggal apa yang lewat", yang ini "angka apa yang mendekati
+atau melewati batasnya". Satu daftar deklaratif; batas berikutnya yang layak
+diawasi ditambahkan sebagai **satu entri array**, bukan sebagai layar baru.
+
+**ENAM KEADAAN, DAN TIGA DI ANTARANYA BUKAN ANGKA.** Inilah seluruh alasan
+registri ini ada, dan aturan yang mengikat setiap entri baru:
+
+| Keadaan | Artinya | Yang dicetak layar |
+|---|---|---|
+| `aman` | di bawah ambang peringatan | persentasenya |
+| `mendekati` | di ambang peringatan atau di atasnya, masih di bawah batas | persentasenya, berwarna |
+| `lampau` | di batas atau melewatinya — **tepat 100 % ada di sisi ini**, dan **batas Rp 0 yang sudah dibelanjakan ada di sini juga** | persentasenya, merah |
+| `tanpa_anggaran` | batasnya DIKETAHUI dan besarnya nol, belum ada yang dibelanjakan | **aturannya** ("Tidak dianggarkan") |
+| `tanpa_batas` | yang diukur ADA, batasnya tidak pernah disetel | **aturannya**, tidak pernah 0 % |
+| `tidak_terukur` | yang diukurnya sendiri belum ada | **aturannya**, tidak pernah 0 % |
+
+**KEADAAN DIBANDINGKAN PADA ANGKA YANG DICETAK, LAMPAU PADA RUPIAHNYA**
+(verifikasi F-2). `mendekati` diadu dengan `displayPct()` — `pct()` yang
+dibulatkan ke jumlah desimal yang benar-benar dicetak layar (satu) — karena
+sebuah baris yang mencetak "90,0 %" lalu menyebut dirinya "Aman" di bawah judul
+"Peringatan ≥ 90 %" adalah dua pernyataan yang bertentangan pada satu baris
+(terukur: Rp 899.999.999 dari Rp 1.000.000.000). `lampau` diadu dengan
+RUPIAHNYA (`$actual >= $limit`), bukan dengan persen yang dibulatkan: sebuah
+baris "Melampaui" yang masih menyisakan satu rupiah yang DITERIMA gerbang
+adalah perselisihan layar-vs-gerbang yang F-2 ada untuk menghapus.
+
+`tidak_terukur` MENDAHULUI `tanpa_batas` (tanpa satu angka pun, "batasnya belum
+disetel" bukan kalimat yang paling menolong), dan catatan barisnya menyebut
+**kedua** sisi yang hilang supaya satu keadaan tidak menyembunyikan kekurangan
+yang lain.
+
+**BATASNYA TIDAK PERNAH DISIMPULKAN DARI NILAINYA** (verifikasi F-2 putaran 2).
+Baris yang tidak punya batas mengirim `limit` **null**; nol adalah ANGKA. Aturan
+lama "`limit` ≤ 0 berarti tidak ada batas" ditulis untuk `prj_projects.contract_value`
+yang berbawaan 0 (0 di sana berarti belum dicatat, bukan kontrak nol rupiah) —
+dan ia menelan sisi yang paling berbahaya yang ada: RAP yang menganggarkan
+**Rp 0** untuk subkon sementara **Rp 200.000.000** biaya subkon sudah tercatat
+hilang dari registri sebagai "Batas belum disetel", lalu — karena urutannya
+menurut persentase, yang tidak ada — jatuh ke DASAR daftar yang seluruh tugasnya
+menyebutkan apa yang melewati batasnya (terukur di kedua driver). Sekarang
+`rapVersusContract` sendiri yang mengirim null saat nilai kontrak belum dicatat,
+`state()` yang memutuskan arti sebuah batas nol (dibelanjakan → `lampau`, belum →
+`tanpa_anggaran`), dan urutan registri memakai `stateRank()` **lebih dulu**,
+persentase sesudahnya — satu definisi "lebih buruk", dipakai juga
+`BudgetRealisationService::worstSide()`.
+
+**PERSENTASE YANG DICETAK TIDAK PERNAH MEMBANTAH LENCANANYA** (verifikasi F-2
+putaran 2). Sebuah baris yang MASIH di bawah batasnya tidak boleh tercetak
+"100 %": `pct()` memulangkan angka terbesar yang masih tercetak di bawah 100 pada
+presisi layar (99,9 % pada satu desimal) untuk `actual < limit` yang membulat
+menjadi 100. Terukur di peramban: RAP Rp 24.250.000.000 terhadap nilai kontrak
+Rp 24.250.000.001 berbunyi "100% · Mendekati batas", tepat di bawah kartu "Cara
+membacanya" layar itu sendiri ("…menjadi 'Melampaui batas' tepat pada 100 %").
+Pembulatannya condong seperti seluruh registri: boleh memperingatkan lebih awal,
+tidak boleh menenangkan lebih lama.
+
+**Aturan yang sama dengan `WatchedDeadlines`:** `DB::table`, literal string,
+**tanpa impor modul fitur** (dipaku `ThresholdWatchTest::test_core_imports_no_feature_module_to_compute_a_threshold`,
+yang memindai baris `use` berkas registrinya sendiri). Tabel dan kolom dijaga
+`missingSchema()`, jadi modul yang belum bermigrasi menjadi baris SKIPPED —
+bukan `QueryException`, dan bukan entri kosong yang terbaca "semua aman".
+
+**ENTRI YANG ANGKANYA MILIK MODUL LAIN DIPASOK, BUKAN DISALIN.** `project_budget_pct`
+mengukur realisasi + KOMITMEN terhadap RAP, dan aritmetika komitmen hidup di
+`Finance\Services\CommitmentService` — yang dibaca `BudgetGateService` sebelum
+menolak sebuah PO. Menyalin SQL-nya ke Core berarti dua jawaban atas satu
+pertanyaan. Maka Core mendeklarasikan entrinya (label, izin, tautan, ambang,
+keadaan) dan modul pemiliknya memasok barisnya:
+
+```php
+// Modules/Finance/Providers/FinanceServiceProvider::boot()
+WatchedThresholds::supply(
+    'project_budget_pct',
+    static fn (): array => app(BudgetRealisationService::class)->thresholdRows(),
+);
+```
+
+Closure, bukan hasil: pemindaian bisa terjadi kapan saja setelah boot, dan
+menghitungnya saat boot membebani setiap permintaan. Selama tidak ada yang
+memasok, entrinya SKIPPED. `flushSchemaMemo()` sudah dipasang di
+`ErpTestCase::setUp`; **`flushSuppliers()` BELUM** — uji yang perlu melihat
+entri yang dipasok modul sebagai SKIPPED harus memanggilnya sendiri (satu-satunya
+pemanggil hari ini: `ThresholdWatchTest:296`).
+
+**Ambang peringatan ada di `config('erp.thresholds.<kunci>')`**, satu kunci per
+entri, bawaan 90 % (ROADMAP-HASHMICRO §5 baris 13). Ini PERINGATAN, bukan
+gerbang: tidak ada satu dokumen pun yang ditolak karena angka di blok itu — yang
+menolak PO/SPK yang menjebol RAP tetap `erp.procurement.budget_gate`, dengan
+kalimatnya sendiri.
+
+Entri yang dikirim F-2: `project_budget_pct` (dipasok Finance),
+`rap_vs_kontrak_pct` dan `overhead_budget_pct` (dihitung Core). Layarnya
+`#/ambang`, tetangga `#/tenggat` di grup Ringkasan. F-7 menambah
+`maintenance_hour_meter` (dipasok Assets) — entri pertama yang satuannya BUKAN
+rupiah dan ambangnya BUKAN persen; lihat dua paragraf berikut.
+
+**SATUANNYA BUKAN SELALU RUPIAH (F-7).** Setiap entri sudah mendeklarasikan
+`unit` sejak F-2 dan **tidak ada yang membacanya**: `ambang.js` memanggil
+`fmt.rupiah` pada kedua sel angkanya, jadi entri berjam pertama mencetak
+"Rp 3.375,50" untuk 3.375,5 JAM. Sekarang layar memformat menurut `unit`
+(`rupiah` → `fmt.rupiah`, selain itu → `fmt.qty(value, unit)`), aturan yang sama
+yang sudah dipegang kolom pertama tabelnya untuk `subject_word`: satuan yang
+dideklarasikan sebuah entri tidak boleh hilang di tabel yang menampilkannya.
+`cells.js` tipe `qty` ikut menerima `unit` opsional untuk alasan yang sama.
+
+**DAN AMBANGNYA BUKAN SELALU PERSEN (F-7).** Sebuah entri yang kedua sisinya
+BUKAN bagian-dari-keseluruhan mendeklarasikan `proportional => false`: `pct`
+tidak dihitung sama sekali (barisnya mengirim `remaining`, dan layar mencetak
+"24,5 jam lagi" / "150 jam lewat"), dan ambangnya dinyatakan dalam SATUAN entri
+lewat `warn_margin_key` + `warn_margin_default` — `state()` menerima parameter
+keempat `$warnMargin` yang menggantikan perbandingan `displayPct` dengan
+`$actual >= $limit - $warnMargin`. **Empat keadaan yang lain tidak berubah**:
+LAMPAU tetap dihakimi pada ANGKA-nya, dan ketiga keadaan yang bukan angka tetap
+mendahului keduanya. Alasan terukurnya: meter kumulatif tidak pernah mulai dari
+nol pada servis terakhir, jadi "96 % terpakai" di sana mengukur UMUR alat, bukan
+sisa jatah servisnya — satu angka config 90 % memberi tenggang 350 jam pada alat
+bertarget 3.500 jam dan 1.225 jam pada alat bertarget 12.250 jam. Urutan baris
+entri seperti itu memakai `remaining` (yang tersisa paling sedikit lebih dulu),
+bukan persentase yang akan mengurutkan menurut umur alat.
+
+**Bawaan margin ada di DUA tempat dan keduanya harus satu angka**: entri Core
+(`warn_margin_default`) dan modul pemasoknya (`MaintenanceDueService::WARN_MARGIN_DEFAULT`).
+Ditemukan lewat mutasi: karena `config/erp.php` selalu menyebutkan kuncinya,
+mengubah bawaan sisi Core dari 50 menjadi 999 **lolos hijau** sampai sebuah uji
+mengosongkan config-nya lebih dulu. `ThresholdHourMeterTest` memaku keduanya.
+
+**BARIS YANG DIPASOK ADALAH SISI YANG DITEGAKKAN, BUKAN AGREGATNYA**
+(verifikasi F-2). `project_budget_pct` memasok sisi PROYEK yang paling dekat ke
+batasnya — non-subkon (dihakimi saat PO diajukan) atau subkon (saat SPK) —
+karena hanya batas per sisi itulah yang benar-benar menolak dokumen; totalnya
+ikut di catatan barisnya. Sebuah registri yang mengukur agregat akan
+membariskan proyek yang totalnya 16,7 % terpakai di antara yang aman sementara
+setiap PO-nya sudah ditolak. Aturannya untuk entri berikutnya: **yang diawasi
+adalah angka yang menolak sesuatu.**
+
+Kolom pertama tabelnya memakai `subject_word` entri apa adanya (dikapitalkan),
+bukan dua pilihan yang dipatok layar: entri yang menyebut satuannya sendiri
+tidak boleh kehilangannya di tabel yang menampilkannya.
+
+## 25. Aktivitas CRM (`crm_activities`, F-3)
+
+Register pekerjaan penjualan: telepon / rapat / email / kunjungan / catatan, menggantung pada satu
+prospek, penawaran, atau pelanggan. **Register, bukan dokumen** — tanpa nomor, tanpa persetujuan,
+tanpa jurnal (selera `crm_guarantees`). Yang dikenali orang adalah subjeknya.
+
+**Dua tanggal dengan dua tipe yang berbeda, dan itu disengaja.**
+
+| Kolom | Tipe | Kenapa |
+|---|---|---|
+| `due_at` | `date` | "Hubungi lagi Senin depan" adalah sebuah HARI. Menyimpannya sebagai `00:00` memalsukan ketelitian yang tidak pernah diketik siapa pun (alasan yang sama tertulis di migrasi 000383 untuk `next_follow_up_at`, dan turunannya harus setipe dengan sumbernya). |
+| `done_at` | `timestamp` | Dicap SERVER saat seseorang menekan "Selesai" — momen yang sungguhan terjadi, bersama `done_by_id`. |
+
+`document_type` + `document_id` menyimpan **jenis pendek** (`lead` / `quotation` / `customer`),
+tidak pernah nama kelas — pola `fin_payment_allocations.payable_type`, dan alasan
+`AttachableDocuments`: endpoint yang menerima nama kelas mengizinkan penelepon menyebut kelas apa
+pun sebagai induk sebuah baris. Daftar sahnya `Modules\Crm\Support\ActivityDocuments`, dan
+cerminnya di klien (`public/app/js/views/activities.js` `ACTIVITY_DOCUMENTS`) dijaga
+`ActivityRegistryTest` — slug yang hanya ada di satu sisi adalah kartu yang selalu 422, atau
+dokumen yang diam-diam tidak bisa mencatat satu pun aktivitas.
+
+**Satu pintu tulis: `ActivityService`.** `done_at`/`done_by_id` ditolak bila diketik (dan dibuang
+lagi dengan `Arr::except` — ikat pinggang dan tali, §26);
+induk yang tidak ada ditolak dengan kalimat yang menyebut jenis dokumennya dalam bahasa layar; dan
+setiap perubahan memanggil `LeadFollowUpService` (§26). Dua pintu berarti satu di antaranya lupa
+menghitung ulang turunannya.
+
+**Kartunya** dipasang `renderDetail` dalam satu baris, seperti kartu Lampiran, dan keanggotaannya
+diputuskan cermin registri di dalam kartu itu sendiri. Empat aturan kejujurannya:
+
+1. **Kartu kosong mengatakan dirinya kosong** — "Belum ada aktivitas dicatat untuk dokumen ini",
+   tidak pernah "0 aktivitas". Angka nol yang dipajang sebagai hasil pengukuran adalah kebohongan
+   kecil yang paling sering dipercaya.
+2. **"Lewat tanggal" dihitung SERVER** (`is_overdue`): jam peramban yang meleset dua hari akan
+   mewarnai baris yang salah, dan warna itulah yang dipakai orang memilih pekerjaan hari ini.
+3. **Kartu prospek menyebut asal tanggal tindak lanjutnya**, dengan subjek aktivitas yang
+   menentukannya.
+4. **Yang dipotong diakui, dan jumlahnya datang dari server** (verifikasi F-3, 8 Sep 2026). Kartu
+   menggambar paling banyak 100 baris dan memakai `api.list` — `api.get` membuang amplopnya, jadi
+   kartu yang memakainya menghitung ringkasannya dari baris yang KEBETULAN termuat: "100 terbuka."
+   pada dokumen berisi 110, sementara kartu papan untuk dokumen yang sama menyebut 110. Kalimat
+   pemotongannya sama bentuknya dengan papan ("100 dari 110 digambar"), dan pada kartu yang
+   terpotong jumlah terbuka/lewat-tanggal DITANYAKAN LAGI ke server alih-alih ditaksir dari yang
+   terlihat.
+
+**Layar detailnya menyebut dokumen induknya** dan menautkannya (`document_id` berlabel "Dokumen",
+tidak dibayangi `document_label`; peta jenis→layar dibalik dari registri yang sama). Antrean kerja
+yang barisnya tidak bisa dibuka sampai ke pekerjaannya adalah antrean buntu.
+
+**Pengawasnya** satu entri `WatchedDeadlines` (`crm_activity_due`, `lead_days` 3, izin
+`crm.update`, tautan `r/crm/activities?state=open`) — bukan perintah baru. `done_at` yang
+mendiamkannya; itu pula sebabnya "Selesai" mencap waktu alih-alih menghapus barisnya.
+
+Dua hal yang harus tetap sejalan dengannya, dan pernah tidak (verifikasi F-3):
+
+- **Hari jatuh temponya belum terlambat** (`valid_through_end`): telepon yang dijanjikan hari ini
+  masih bisa ditelepon hari ini, jadi hari itu MENIPIS dan LEWAT mulai besok — sama dengan
+  `Activity::isOverdue`, saringan `state=overdue`, dan hitungan lewat-tanggal kartu papan. Tanpa
+  bendera itu orang dikabari pukul 08.30 bahwa pekerjaannya terlambat lalu tidak menemukan satu pun
+  tanda terlambat di layar mana pun.
+- **Tautannya membawa saringan yang layarnya deklarasikan.** `views/list.js` membuang kunci query
+  yang tidak ada di `def.filters` DIAM-DIAM; tanpa saringan `state`, pemberitahuan jatuh tempo
+  membuka daftar yang urut `due_at` lintas keadaan — baris pertamanya pekerjaan yang selesai 20
+  bulan lalu.
+
+## 26. Transisi pipeline prospek (`LeadStatus::canMoveTo`, F-3)
+
+`crm_leads.status` bukan lagi kolom formulir. Sampai F-3 satu `PUT` dengan `{"status":"won"}`
+memenangkan sebuah prospek **tanpa penawaran, tanpa nilai, tanpa tanggal keputusan** — sementara
+win-rate per sales dihitung dari kolom itu.
+
+**Matriksnya, satu tempat** (`LeadStatus::canMoveTo` memulangkan `LeadMove`, bukan boolean: sebuah
+boolean hanya bisa mengatakan "tidak", dan setiap layar yang membacanya lalu harus MENEBAK sebabnya
+untuk bisa menulis kalimatnya):
+
+| dari \ ke | Baru | Sudah Dihubungi | Terkualifikasi | Penawaran Dikirim | Menang | Kalah |
+|---|---|---|---|---|---|---|
+| **Baru** | sama | maju | maju | maju | lewat penawaran | lewat penawaran |
+| **Sudah Dihubungi** | mundur | sama | maju | maju | lewat penawaran | lewat penawaran |
+| **Terkualifikasi** | mundur | mundur | sama | maju | lewat penawaran | lewat penawaran |
+| **Penawaran Dikirim** | mundur | mundur | mundur | sama | lewat penawaran | lewat penawaran |
+| **Menang** | terkunci | terkunci | terkunci | terkunci | sama | lewat penawaran |
+| **Kalah** | terkunci | terkunci | terkunci | terkunci | lewat penawaran | sama |
+
+- **maju** — bebas, boleh melompati tahap: prospek dari undangan tender memang lahir langsung
+  terkualifikasi.
+- **mundur** — boleh, **dengan alasan ≥ 5 karakter** yang tersimpan di `crm_lead_status_changes`
+  (append-only) dan terbaca di kartu "Riwayat Tahap". Mundur adalah kabar buruk, dan corong yang
+  bisa dimundurkan diam-diam adalah corong yang angka konversinya tidak berarti apa-apa.
+- **lewat penawaran** — Menang/Kalah **hanya** lahir dari `QuotationService::markWon/markLost`
+  (yang memanggil `LeadPipelineService::decideByQuotation`, jadi keputusannya ikut tercatat dengan
+  kode QTN-nya). Penolakannya menyebut penawaran MANA yang harus ditandai — **yang tombolnya
+  sungguh ada di sana**: "Tandai Menang" hanya lahir pada penawaran DISETUJUI, sedangkan "Tandai
+  Kalah" ada pada setiap penawaran yang belum diputuskan. Yang belum disetujui disebut bersama
+  langkah yang kurang ("masih draf — ajukan dan setujui dulu"); yang semua penawarannya sudah
+  diputuskan disuruh membuat penawaran baru; dan yang memang belum punya satu pun diakui apa
+  adanya. Sebuah penolakan yang menyebut alamat yang salah lebih buruk daripada penolakan tanpa
+  alamat: yang kedua membuat orang bertanya, yang pertama membuatnya yakin aplikasinya rusak.
+- **terkunci** — prospek yang sudah menang/kalah tidak bisa dikembalikan ke tahap mana pun; nasibnya
+  milik penawarannya.
+
+**Pintunya satu: `POST crm/leads/{id}/pipeline` `{status, reason?}`** (`LeadPipelineService`).
+`LeadUpdateRequest` menolak `status` dan `next_follow_up_at` dengan **`missing`, bukan
+`prohibited`**, `LeadStoreRequest` hanya menerima tahap TERBUKA saat membuat, dan isian status di
+formulir SPA `createOnly`. Sebuah pintu kedua yang tidak memeriksa apa-apa membuat pintu pertama
+sekadar saran.
+
+> **`prohibited` bukan penolak yang Anda kira** (verifikasi F-3, 8 Sep 2026). Aturannya adalah
+> kebalikan `required`, jadi ia LULUS untuk nilai kosong: `{"next_follow_up_at": null}` dijawab
+> 200 dan MENGHAPUS kolom turunannya (`""` sama saja — `ConvertEmptyStringsToNull`), dan
+> `{"status": null}` menjadi HTTP 500 "NOT NULL constraint failed". `missing` gagal begitu kuncinya
+> ADA. Untuk field yang tidak boleh ditulis formulir, `missing` adalah aturannya — dan
+> controllernya tetap menyaring sekali lagi (`Arr::except`), karena satu rule yang salah pilih
+> tidak boleh cukup untuk membatalkan sebuah aturan.
+
+**Alasan mundur diminta oleh SERVER, dijawab SPA.** Layanan menolak 422 berkunci `reason`; mesin
+`confirmResubmit` (§ actions.js) membuka satu isian wajib berisi kalimat servernya lalu mengirim
+ulang. Deklarasinya satu (`ALASAN_MUNDUR` di `schema.js`) dan dipakai tombol "Ubah Tahap" DAN
+keenam perpindahan papan — dialog yang berbeda antar permukaan adalah cara sebuah aturan berhenti
+terasa seperti satu aturan.
+
+**Papan pipeline** (`b/crm/leads`) memakai mesin §19 apa adanya, dengan tiga kait kecil yang lahir
+di sini dan berlaku untuk papan mana pun:
+
+| Kait | Isi | Kenapa |
+|---|---|---|
+| `board.api` | rute baca papan (`crm/pipeline/board`) | Papan generik mengambil SATU halaman lalu mengelompokkannya di klien: 300 prospek Menang mendorong kolom "Baru" keluar halaman dan papannya tampak kosong justru di kolom yang paling dikerjakan. Rute papan mengambil N teratas **per kolom** dan memulangkan jumlah sebenarnya di `meta.lanes` — selisihnya dikatakan ("5 dari 7 digambar"). |
+| `board.card.fields` | kunci baris yang dicetak apa adanya di kaki kartu | Kalimat siap pakai dari server ("Belum ditugaskan", "2 aktivitas lewat tanggal"). Nilai kosong DILEWATI: baris "0 aktivitas" yang selalu ada mengajari orang mengabaikan barisnya. |
+| `action.body` + `action.boardOnly` | muatan tetap satu aksi; aksi yang tidak muncul di bilah dokumen | Satu endpoint melayani enam kolom. `boardOnly` menahan enam tombol "Pindahkan ke …" keluar dari bilah aksi — termasuk dua yang memang **selalu ditolak** (Menang/Kalah), yang dipetakan justru supaya kartunya kembali membawa KALIMAT SERVER, bukan kalimat generik papan ("tidak ada aksi yang memindahkan dokumen ke kolom itu") yang terdengar seperti aplikasi rusak. |
+
+**Pemilik prospek: `owner_user_id`** (migrasi 000397 mengganti nama `user_id` — bukan menambah
+kolom kedua; lihat docblock-nya). Boleh kosong, dan yang kosong berbunyi **"Belum ditugaskan"** di
+setiap permukaan lewat SATU kalimat (`ActivityResource::ownerName`, dipakai juga `LeadResource`):
+daftar, CSV daftar, kartu papan, dan layar dokumen. Pemilik yang baris penggunanya sudah tidak ada
+berbunyi lain — itu data rusak, bukan "belum ditugaskan".
+
+## 27. Absensi masuk/pulang dari ponsel (`hr_attendances.check_in_*`, F-4)
+
+Absensi ponsel adalah pengukuran, dan setiap aturan di bawah lahir dari satu pertanyaan: apa yang
+boleh dikatakan sistem ini kepada orang yang membacanya nanti.
+
+**Mencatat, tidak pernah menolak.** Di luar radius proyek, di dalam, atau tidak diketahui —
+absensinya tersimpan sama saja. Ambang geofence (`hr.attendance.geofence_metres`, bawaan 500 m)
+hanya menentukan baris mana yang DITANDAI. Menolak absensi karena GPS berarti orang yang tetap
+bekerja hari itu tidak punya catatan sama sekali, dan yang paling sering kena bukan orang yang
+berbohong melainkan gudang berdinding beton, basement, dan ponsel murah.
+
+**Tidak tahu bukan nol.** Proyek tanpa `latitude`/`longitude`, dan ponsel tanpa fix, sama-sama
+menghasilkan `check_in_distance_m` **NULL**. Nol berarti "berdiri tepat di titik proyek". Kolom
+`outside_geofence` sengaja TIDAK ADA: ia turunan penuh dari (`distance_m`, `geofence_m`), dan kolom
+turunan yang disimpan adalah kolom yang suatu hari melenceng dari sumbernya.
+`Attendance::outsideGeofence($side)` menghitungnya dan mengembalikan **null** untuk keadaan ketiga —
+tiga keadaan, dan yang ketiga BUKAN "di dalam".
+
+**Kalimatnya milik server.** `AttendanceResource` menerbitkan `distance_text` (`"—"` bila null),
+`verdict` (`inside|outside|unknown`) dan `verdict_text` jadi. Layar mengulangnya; tidak ada layar
+yang menyusun kalimatnya sendiri dari angka. Idiom yang sama dengan
+`BudgetRealisationService::sideView()` (F-2), dan alasannya sama: layar kedua akan menyusunnya
+sedikit berbeda, dan yang ketiga akan menulis "0 m".
+
+**Waktu perangkat dicatat, tidak pernah menggantikan.** `*_at` = jam server saat catatan sampai;
+`*_device_at` = jam ponsel saat tombol ditekan. Antrean luring bisa mengirim berjam-jam kemudian,
+jadi jam server sendirian berbohong tentang kapan orangnya datang; jam ponsel bisa dipalsukan
+siapa saja. **Satu-satunya keputusan yang boleh diambil jam ponsel adalah TANGGAL barisnya**, dan
+hanya bila ia masih dalam ±48 jam dari jam server — tanpa itu antrean yang menyeberangi tengah
+malam menaruh absen kemarin di hari ini dan menimpanya lewat kunci unik (karyawan, tanggal). Jam
+ponsel yang berjalan maju tetap dipotong ke hari server. **`Carbon::parse()` atas ISO-8601 ber-Z
+menghasilkan objek ber-zona UTC**: ia WAJIB `->setTimezone(config('app.timezone'))` sebelum dipakai,
+atau absen pukul 06.30 WIB (23.30 UTC kemarin) diarsipkan ke tanggal kemarin.
+
+**Ambang distempel, seperti kebijakan persetujuan F-1.** `*_geofence_m` menyimpan radius yang
+BERLAKU saat itu, dan hanya ketika jaraknya benar-benar terukur. Tanpa stempel, menaikkan angka di
+Pengaturan membersihkan setiap tanda "di luar lokasi" di masa lalu secara surut. `*_project_id`
+menyimpan proyek ACUAN pengukuran, terpisah dari `project_id` baris: kerani boleh memindahkan baris
+ke proyek lain sesudahnya, dan tanpa acuan tersimpan jaraknya diam-diam berubah arti.
+
+**Idempotensi antrean.** Butir yang sama dikirim ulang membawa `device_at` yang sama — satu-satunya
+tanda yang membedakan "kirim ulang" dari "ditekan dua kali". Absen masuk kedua: yang PERTAMA
+menang, dan dikatakan. Absen pulang kedua: yang TERAKHIR menang (orang benar-benar pulang
+belakangan) dan yang lama menjadi baris jejak.
+
+**Pintu absen tidak menerima `employee_id`.** `POST hr/attendances/me/clock-in|clock-out` menulis
+baris milik `users.employee_id` pemanggilnya. Sebuah field yang bisa menyebut orang lain
+menjadikannya pintu untuk mengabsenkan rekan yang belum datang. Akun tanpa kartu karyawan mendapat
+kalimat, bukan layar rusak dan bukan absensi orang lain.
+
+**Balapan pada absen pertama hari itu.** `rowFor()` melakukan SELECT lalu `save()` melakukan
+INSERT, dan di antaranya baris (karyawan, tanggal) yang sama bisa lahir dari pintu lain. Sekali
+ulang pada `UniqueConstraintViolationException` — di pintu absen DAN di lembar kerani. Pintu yang
+aturannya "mencatat, tidak pernah menolak" tidak boleh menjawab 500; itu penolakan paling keras
+yang tersedia. Idiom rumah yang sama: `DailyReportService`, `HseDailyService`,
+`BankStatementImportService`.
+
+**Jam ponsel yang tidak terbaca kehilangan JAMNYA, bukan absennya.** `device_at` divalidasi sebagai
+STRING, bukan `date`: aturan `date` berjalan sebelum service dan menjawab 422 untuk "banana" —
+tidak ada baris, tidak ada selfie, tidak ada catatan bahwa orangnya datang. Dan
+`Carbon::parse('0000-00-00 00:00:00')` TIDAK melempar (ia memulangkan tahun nol, yang MySQL ketat
+menolak menulis), jadi `deviceTime()` membuang apa pun di luar tahun 2000–2100.
+
+**Satu selfie per sisi, dan yang pertama bertahan.** Menimpa penunjuknya meninggalkan berkas
+pertama di penyimpanan tanpa baris yang menyebutnya. Absen kedua yang membawa foto TETAP menyimpan
+fotonya bila sisi itu belum punya — foto bukan jam — dan yang ditolak dikatakan, bukan ditelan.
+Ekstensinya dibatasi ke gambar: daftar izin `AttachmentService` bersifat generik (PDF, Word, CSV),
+dan `accept="image/*"` di HTML hanya saran kepada pemilih berkas.
+
+**Menghapus baris absensi.** Ditolak bila barisnya membawa jejak koreksi ATAU absen dari ponsel.
+Jejak tambah-saja yang bisa dimusnahkan pemegang `hr.delete` tidak membuktikan apa pun, dan absen
+ponsel adalah catatan seseorang tentang dirinya. FK-nya `restrictOnDelete` sebagai lapis kedua
+untuk jalur yang tidak lewat controller.
+
+**Dua keadaan "tidak ada karyawan", dua kalimat.** Akun tanpa `employee_id` diminta menautkan;
+akun yang tertaut ke kartu yang di-soft-delete diminta mengaktifkan kembali kartunya. Kalimat
+pertama untuk keadaan kedua menyuruh HR menautkan yang sudah tertaut.
+
+**`GET hr/attendances` menuntut `hr.view` sejak F-4.** Barisnya kini membawa koordinat, akurasi fix
+dan selfie — riwayat posisi seseorang hari demi hari, setara dengan register sertifikat dan
+pengajuan cuti yang sudah dijaga. `GET hr/attendances/me` adalah pintu tanpa izin untuk baris
+sendiri: kueri yang secara struktur tidak bisa mengembalikan baris orang lain, bukan penyaring di
+atas daftar yang sama.
+
+## 28. Jejak koreksi absensi (`hr_attendance_corrections`, F-4)
+
+TAMBAH-SAJA: tidak ada rute update maupun delete, dan tidak akan ada. Log yang bisa diedit tidak
+membuktikan apa pun.
+
+TIGA pintu bisa mengubah satu baris absensi, dan ketiganya menulis lewat SATU kelas
+(`AttendanceCorrectionService`) — cacat yang paling sering ditemukan kampanye ini adalah aturan yang
+ditegakkan di satu pintu lalu bocor di pintu kedua:
+
+| `source` | Pintu | Alasan |
+|---|---|---|
+| `update` | `PUT hr/attendances/{id}` (pengawas) | **Diketik, wajib, minimal 5 karakter.** |
+| `bulk` | `POST hr/attendances/bulk` (lembar kerani dikirim ulang) | Ditulis sistem. Memaksa 40 alasan per lembar berarti kerani kembali ke kertas, dan absensi yang tidak tercatat sama sekali jauh lebih buruk daripada jejak beralasan generik. |
+| `clock` | absen pulang kedua dari ponsel | Ditulis sistem, menyebut jam pulang sebelumnya. |
+
+`pending()` dipanggil SEBELUM `save()` (ia membaca `getDirty()`/`getRawOriginal()`), `write()`
+sesudahnya (baris baru belum punya id). Nilai disimpan sebagai teks, dan **null tidak boleh menjadi
+string kosong**: `""` berarti seseorang mengetik catatan kosong, `null` berarti tidak pernah ada
+catatan.
+
+**Kolom pengukuran tidak bisa dikoreksi**: koordinat, jarak, akurasi dan ambang tidak ada di
+`AttendanceUpdateRequest`. Itu hasil pengukuran, bukan pendapat — dan orang yang paling
+berkepentingan menghapus tanda "di luar lokasi" adalah orang yang ditandai. Yang BOLEH: status,
+catatan, proyek, dan jam masuk/pulang ("lupa absen pulang" adalah kasus paling sering di lapangan).
+Kunci yang ABSEN dari badan permintaan tidak disentuh; `null` EKSPLISIT mengosongkan.
+
+**Lembar kerani tidak pernah menulis kolom jam.** Lembar kertas tidak tahu jam berapa orangnya
+datang, dan menimpanya dengan null berarti lembar yang dikirim ulang menghapus bukti GPS hari itu.
+
+## 29. Usulan rekap absensi — dan mengapa tidak ada POST-nya (F-4)
+
+`GET hr/attendance-recaps/proposal` MEMBACA. Tidak ada endpoint pasangan yang menulis.
+
+**Sejak F-5 (14 Sep 2026) ADA satu jalur dari `hr_attendances` ke `hr_payslips`, dan ia dibatasi
+satu kalimat: absensi boleh menggeser TARIF, tidak pernah JUMLAH JAM.** Sampai F-5 kalimat di
+tempat ini berbunyi "tidak ada jalur", dan itu sudah tidak benar — `PayrollService` memanggil
+`TimesheetService::measuredOvertimeShape()` untuk tahu BENTUK harian lembur sebuah periode, lalu
+memakainya untuk membelah 1,5x jam pertama dari 2x jam berikutnya. Berapa jam yang dibayar tetap
+datang dari `hr_attendance_recaps` — dokumen yang diperiksa dan disimpan manusia, dan yang
+otoritatif atasnya tetap ILB. Mengoreksi satu cap jam karena itu bisa menggeser upah lembur
+(terukur: Rp 250.000 pada 7 jam ILB yang sama), dan tidak pernah menggeser jamnya.
+
+`AttendanceIsNotPayrollInputTest` memaku batas itu dari TIGA arah: uji sumber (tujuh berkas
+penghasil payroll tidak menyebut register absensi lewat nama tabel, model atau service; lima berkas
+absensi tidak menyebut payroll), uji JEMBATAN (`PayrollService` menyebut `TimesheetService` tepat
+sekali, lewat `measuredOvertimeShape()` dan bukan `forEmployee`/`day`/`policy`), dan uji perilaku
+pada rekap yang BENAR-BENAR BERLEMBUR (koreksi satu cap jam: `overtime_hours` diam, `overtime_pay`
+bergerak). Lapis ketiga itu ada karena bentuk lamanya memakai rekap 0 jam — dan pada rekap 0 jam
+`overtimeComputation()` pulang lebih awal, sehingga uji itu hijau untuk jalur yang menggeser
+seperempat juta rupiah.
+
+Alasan pemisahannya bukan kehati-hatian yang samar: register absensi boleh dikoreksi kapan saja
+(F-4 justru menambah pintu koreksinya), sedangkan payroll yang disetujui sudah membukukan jurnal
+dan membayar orang — dan `calculate()` menolak run yang tidak editable, jadi koreksi absensi tidak
+pernah menyentuh slip yang sudah diposting.
+
+**`whereDate`, bukan `whereBetween`.** Cast `date` MENYIMPAN tengah malam, dan SQLite membandingkan
+STRING: `'2026-06-30 00:00:00' > '2026-06-30'`, sehingga tanggal terakhir setiap bulan jatuh keluar
+dari rentangnya. MySQL punya kolom DATE sungguhan dan benar — jadi yang salah justru driver yang
+dipakai produksi hari ini. Karyawan yang SATU-SATUNYA catatannya bulan itu jatuh di sana lenyap
+seluruhnya, dan layarnya lalu mencetak "register bulan ini kosong" tentang orang yang ada di
+dalamnya.
+
+**"Absen ponsel" dihitung dari `check_in_device_at`, bukan `check_in_at`.** Pengawas boleh mengetik
+jam masuk (§28 menganjurkannya untuk "lupa absen pulang"), dan hanya pintu absen ponsel yang
+menulis jam PERANGKAT. Menghitung kolom yang salah membuat layar melaporkan hari yang tidak pernah
+disentuh ponsel siapa pun sebagai absen ponsel tanpa jarak terukur.
+
+**Yang tidak diusulkan sama pentingnya dengan yang diusulkan.** `not_proposed` membawa `field`,
+`label` DAN `why` untuk sakit, cuti, hari kerja, jam lembur dan hari setengah — register tidak tahu
+apa-apa tentang kelimanya. Mengisinya dengan 0 akan terlihat seperti jawaban dan terbawa ke slip
+gaji sebagai hak yang hilang. Karyawan tanpa satu pun catatan bulan itu **tidak muncul** sebagai
+baris nol: "0 hadir" membaca seperti absen sebulan penuh.
+
+## 30. Antrean kirim bersama (`public/app/js/uploadqueue.js`, F-4)
+
+Satu kotak keluar untuk seluruh aplikasi: bilah kemajuan per butir (XHR `upload.onprogress` lewat
+`api.upload`), yang gagal tetap terdaftar dengan "Kirim ulang", butir bertahan di `localStorage`
+melewati muat-ulang halaman dan sesi yang berakhir, satu kirim pada satu waktu. Awalan
+`nusantara_erp_upload:<user id>:` — per pengguna (tablet lapangan dipakai bergantian) dan tidak
+boleh saling mengawali dengan awalan draf `drafts.js`.
+
+**Bentuk muatan didaftarkan DI DALAM berkas antrean** (`KINDS`), bukan oleh layar yang membuatnya.
+Butir hidup lebih lama daripada layar: butir 'clock' yang bentuknya hanya dikenal
+`views/absensisaya.js` akan terlihat di kartu "belum terkirim" tanpa bisa dikirim ulang sampai
+orangnya kebetulan membuka layar yang benar.
+
+**`api.upload(..., { raw: true })`** memulangkan AMPLOP, bukan `data`. Untuk absensi kalimat yang
+benar ada di `message` server — tanpa amplopnya toast hanya bisa berkata "terkirim" tentang absen
+yang tercatat 8 km di luar lokasi.
+
+**Antrean digambar DI LUAR kotak yang dilukis ulang `load()`.** Selama luring `load()` gagal dan
+segalanya yang dilukisnya lenyap; kalau barisnya ikut lenyap, pita luring menyuruh orang menekan
+"Kirim ulang" pada baris yang tidak ada di layar. Tombol aksinya pun digambar ulang dari jawaban
+terakhir yang berhasil, dengan pita "tidak dapat dimuat" di atasnya — antrean itu dibuat justru
+untuk saat tidak ada sinyal.
+
+**Butir tanpa `kind` dipulihkan sebagai lampiran.** Versi sebelum F-4 tidak pernah menulis field
+itu. Butir yang tidak dikenali dan hanya dilewati akan lenyap dari layar DAN tetap memakan kuota
+selamanya — yang tidak pernah masuk `readQueue()` tidak pernah sampai ke `forget()`. Bentuk yang
+tetap tidak dikenali (dari versi lebih baru) DIBUANG dari `localStorage`, bukan dilewati.
+
+**`devicePosition()` memegang batas waktunya sendiri.** Menurut spesifikasi Geolocation, penghitung
+`timeout` baru berjalan sesudah izin diberikan; permintaan izin yang tidak dijawab — pemakaian
+pertama, di gerbang proyek — menggantung selamanya, dan butirnya berhenti di `locating` tanpa
+"Kirim ulang", tanpa "Buang", tanpa terkirim.
+
+**Muatan yang ditolak klien tidak boleh membatalkan peristiwanya.** Selfie kebesaran mengorbankan
+FOTONYA; absennya tetap masuk antrean, dan toastnya mengatakan keduanya. Kamera ponsel modern rutin
+melewati 5 MB, jadi ini jalur yang sering, bukan jarang.
+
+**Kunjungan pertama yang luring tetap punya tombolnya.** Pintu absen tidak membutuhkan daftar hari
+maupun daftar proyek, jadi tombolnya digambar tanpa jawaban server sama sekali; yang tidak bisa
+diketahui dinyatakan apa adanya, bukan ditebak. Layar yang hanya berisi panel galat sementara pita
+luring menyuruh menekan tombol yang tidak ada adalah cacat P1-I yang terulang.
+
+**`.btn.lg` menyetel `height`, bukan padding.** `.btn` punya `height: 34px` dan `box-sizing:
+border-box`, jadi padding vertikal tidak menumbuhkan kotaknya sama sekali. Target sentuh rumah ini
+42–44 px, dan layar yang dipakai satu tangan sambil berdiri adalah tempat terakhir yang boleh
+melanggarnya.
+
+**Layar yang memakai antrean tidak boleh mendeklarasikan `QUEUE_PREFIX` atau `MAX_BYTES` sendiri**
+(dipaku `UploadQueueTest`): dua antrean di `localStorage` yang sama tidak akan pernah saling
+melihat, dan salinan kedua batas ukuran adalah salinan yang suatu hari berbeda dari servernya.
+
+## 31. Titik pesan ulang (`inv_reorder_rules`, F-6)
+
+Ambang "perlu dipesan ulang" untuk sepasang **gudang × item**. Aturan AKTIF untuk pasangan itu
+**MENGGANTIKAN** `inv_items.min_stock` — bukan menambahnya, bukan "yang paling ketat menang", dan
+itu berlaku juga bila titiknya LEBIH RENDAH. Kalau tidak, aturan gudang site tidak pernah bisa
+lebih longgar daripada angka perusahaan, yang adalah persis alasan tabelnya lahir. `reorder_point`
+0 pada aturan aktif berarti "pasangan ini tidak pernah dipesan ulang", jadi syarat `> 0` berlaku
+pada ambang yang **MENANG**, bukan pada `min_stock`.
+
+**Definisinya hidup di DUA tempat, dengan sengaja:** `StockService::lowStockAlerts()` dan salinan
+literalnya di registri Core `ModuleCounts` entri `inv` (Core tidak boleh mengimpor modul fitur,
+§16). Yang disalin adalah **struktur query builder**, bukan potongan SQL mentah: bentuk dua lengan
+`OR` yang saling meniadakan lewat `r.id`, dengan `is_active` **di klausa ON** — di WHERE ia
+mengubah LEFT JOIN menjadi INNER JOIN dan setiap pasangan tanpa aturan hilang dari daftar
+sekaligus. `ModuleCountsTest` memaku kesetaraan keduanya **dan** memaku bahwa fixture-nya
+benar-benar memisahkan "dengan aturan" dari "hanya min_stock" — tanpa lengan kedua itu, sepasang
+salinan yang sama-sama melupakan tabel aturan lolos hijau.
+
+**DAN KUERINYA PUNYA DUA BAGIAN, karena satu pasangan bisa BELUM PUNYA BARIS SALDO.** Kueri di atas
+berangkat `FROM inv_stock_balances`, jadi pasangan gudang × item yang belum pernah kemasukan barang
+tidak punya baris untuk berangkat — dan itu justru keadaan yang paling membutuhkan pesan ulang:
+seseorang menyatakan "gudang ini menyimpan barang ini, titik pesan ulang 100" untuk barang yang
+stoknya nol karena belum pernah masuk. Sampai putaran ketiga F-6, `governs()` berkata `true`, daftar
+aturan menggambarnya berlaku, kartu itemnya berkata "1 gudang memakai titik pesan ulang sendiri" —
+sementara daftar kekurangan, usulan PR dan tab "Perlu dipesan ulang" semuanya kosong. Bagian kedua
+karena itu berangkat dari `inv_reorder_rules`, membuang pasangan yang PUNYA baris saldo
+(`whereNull('b.id')` atas LEFT JOIN ke saldo), dan memperlakukan sisanya sebagai qty 0. Syaratnya
+sama semuanya — aturan aktif, item hidup, gudang hidup, item aktif, titik > 0 — kalau tidak ia
+menjadi pintu belakang yang melewati `governing()`. **Sebuah baris aturan ADALAH pernyataan "gudang
+ini menyimpan barang ini"**; tanpa pernyataan itu, "setiap item × setiap gudang" adalah perkalian
+yang akan menerbitkan ribuan baris pada `min_stock` perusahaan, dan itulah kenapa bagian kedua
+hanya berangkat dari tabel aturan. **Kedua salinan wajib membawa keduanya**, ditambahkan dan bukan
+di-UNION (satu pasangan punya baris saldo atau tidak punya, jadi keduanya tidak bisa beririsan);
+fixture `ModuleCountsTest` membawa satu pasangan tanpa saldo, jadi salinan yang melupakan bagian
+kedua jatuh.
+
+**UNIQUE (warehouse_id, item_id), dan karena itu TANPA softDeletes** (pola `ast_depreciation_runs`
+dan `core_saved_reports`). Dua baris hidup untuk satu pasangan menggandakan setiap baris kekurangan
+di keempat permukaannya — layar Saldo Stok, widget dasbor, ubin launcher, usulan PR — tanpa satu
+pun galat. Sebuah baris yang dibuang lembut akan menempati pasangannya selamanya sehingga aturan
+yang dihapus tidak pernah bisa dibuat ulang; saklarnya `is_active`, yang memang untuk itu.
+`Rule::unique` di FormRequest menambahkan **kalimatnya**, bukan aturan kedua.
+
+**PRIORITASNYA DITULIS DI LAYAR, bukan hanya berlaku di kode — KE DUA ARAH.** Setiap baris
+kekurangan membawa ambang yang menang, nama sumbernya (`threshold_source_label`), DAN angka item
+yang kalah: sebuah baris yang menulis "20" padahal kartu itemnya berkata 100 tanpa mengatakan dari
+mana 20 itu datang adalah angka yang tidak bisa diperiksa siapa pun. **Arah sebaliknya sama
+wajibnya**, dan ia terlewat sampai putaran perbaikan F-6: kartu item adalah satu-satunya layar yang
+memajang angka yang KALAH, jadi `ItemResource` mengirim `reorder_rule_note` bila ada aturan yang
+BERLAKU untuk item itu ("N gudang memakai titik pesan ulang sendiri… stok minimum di atas TIDAK
+berlaku"). Tanpa itu, yang menaikkan `min_stock` di sana mengira ia sedang mengubah ambang gudang
+yang punya aturan; ia tidak mengubah apa pun.
+
+**"Aktif ✓" BUKAN "berlaku", DAN "BERLAKU" PUNYA SATU DEFINISI: `ReorderRule::governing()`.**
+Empat syarat — aturannya `is_active`, itemnya hidup, gudangnya hidup, ITEMNYA `is_active` — dan
+keempatnya sudah lama ditegakkan kueri kekurangan (`r.is_active` di klausa ON, `whereNull` pada
+kedua join-nya, `i.is_active` di WHERE-nya). Item dan gudang menghapus-lembut, relasi aturan memakai
+`withTrashed()` dengan sengaja (supaya namanya selamat dan barisnya tetap bisa dibuang orangnya),
+jadi sebuah baris bisa terlihat hidup sementara ambangnya tidak menentukan apa pun. Item yang
+DINONAKTIFKAN adalah syarat tersendiri, bukan bagian dari "itemnya hidup": menonaktifkan adalah
+jalur NORMAL untuk barang yang berhenti dibeli — kartunya tetap ada, dan sampai putaran ketiga F-6
+barisnya digambar tanpa satu keping pun dengan `applies: true`. `ReorderRuleResource` karena itu mengirim `applies` (= `->governs()`,
+bentuk baris dari scope yang sama) dan `deleted_labels`. **Yang digambar daftarnya sebagai keping
+hanyalah `deleted_labels`**; `applies` adalah fakta server yang belum punya kolom sendiri, jadi
+baris yang tidak berlaku KARENA ITEMNYA NONAKTIF tidak membawa tanda apa pun di layar itu — kolom
+"Aktif" di sebelahnya adalah saklar ATURANNYA, dan ia memang menyala. Layar itu tidak berbohong
+(ia tidak pernah menulis "berlaku"), tetapi ia juga tidak menjawab pertanyaannya.
+
+**Salinan yang ketiga adalah bagaimana ia dulu bocor.** Sampai putaran kedua F-6 setiap permukaan
+menghitung "berlaku" sendiri, dengan isi yang berbeda: `loadCount` kartu item memeriksa `is_active`
+saja (jadi kartunya berkata "stok minimum di atas TIDAK berlaku" untuk aturan yang gudangnya sudah
+dibuang, sementara layar sebelahnya menandai baris yang sama "Gudang dibuang"), dan `applies`
+memeriksa kedua `deleted_at` saja (jadi aturan NONAKTIF dikirim `applies: true`). Kueri kekurangan
+**tidak bisa** memanggil scope-nya — ia berangkat dari `inv_stock_balances` dan menyapa tabel aturan
+lewat LEFT JOIN, karena pasangan TANPA aturan pun harus muncul — jadi yang menjaga keduanya satu
+arti adalah **ujinya**: `ReorderThresholdTest` memaku bahwa kumpulan `governing()` PERSIS kumpulan
+aturan yang dipatuhi kueri kekurangan, dan bahwa predikat barisnya sepakat dengan kuerinya satu per
+satu.
+
+## 32. Usulan PR dari kekurangan stok (`ReorderService`, F-6)
+
+**Draf, dan tidak selangkah lebih jauh.** Dokumennya dibuat lewat `PurchaseRequisitionService` yang
+sudah ada — yang selalu menyimpan Draf — dan berhenti. Tidak ada rute Inventory yang mengajukan
+atau menyetujui (dipaku `ReorderProposalTest`). Alasannya sama dengan §29: sebuah ambang yang salah
+ketik satu digit akan mengubah dirinya menjadi PO, dan PO adalah uang yang keluar.
+
+**Idempotensi DINYATAKAN, bukan disimpulkan.** Sebuah item dilewati bila ia sudah menjadi baris
+pada **PR ATAU PO terbuka** (`draft`/`submitted`/`approved`, belum dibuang) untuk gudang yang sama
+**atau** pada dokumen yang tidak menyebut gudang sama sekali. `rejected`/`closed`/`cancelled`
+**bukan** terbuka: PR yang ditolak adalah permintaan yang seseorang tolak, dan PO yang `closed`
+sudah diterima penuh (PoService menutupnya sendiri begitu SELURUH barisnya diterima) — kekurangan
+yang tersisa sesudahnya memang nyata.
+
+**PO IKUT, dan itu bukan kelebihan cakupan.** `PurchaseOrderStoreRequest` MENGIZINKAN PO tanpa PR
+(`purchase_requisition_id` nullable + `pr_bypass_reason` wajib bila kosong). Versi pertama layanan
+ini hanya mengkueri baris PR, jadi barang yang sudah ada di PO Disetujui — uangnya sudah terikat —
+muncul lagi sebagai "Akan diusulkan", dan menekan tombolnya melahirkan permintaan kedua yang baru
+terlihat ketika barangnya datang dua kali. Kalimatnya membedakan keduanya: **"Sudah dipesan pada
+PO/…"** versus **"Sudah diminta pada PR/…"**; yang pertama sudah menjadi janji kepada pemasok.
+
+Lengan "tanpa gudang" adalah pilihan ke arah yang lebih sepi, dan biayanya dibayar dengan
+keterlihatan: tiap baris yang dilewati menuliskan **kode dokumen** yang menutupinya. Kalimat
+aturannya dikirim server (`why_skipped`) — salinan di layar akan menyimpang pada suntingan
+pertama, dan sampai putaran perbaikan F-6 tidak satu pun uji PHP memakunya (hanya harness), jadi ia
+hilang dari gerbang rilis paket berikutnya.
+
+**Satu PR per GUDANG**, karena PR punya satu `warehouse_id`. Proyeknya **diturunkan** dari
+`inv_warehouses.project_id`, taksiran harganya dari `inv_items.last_price`, jumlahnya dari ambang
+yang menang (atau `reorder_qty` aturan bila aturan menyebutnya). Tidak ada angka yang dikarang.
+Gerbangnya **`prc.create`**, bukan `inv.*`: yang dibuat adalah dokumen Procurement, dari layar mana
+pun tombolnya ditekan.
+
+## 33. Code 128 & label F/LBL (`Modules\Core\Support\Code128`, F-6)
+
+Barcode yang salah **tidak terlihat salah**: digit periksa mod-103 yang keliru menghasilkan gambar
+rapi yang tidak terbaca pemindai mana pun — atau, lebih buruk, terbaca sebagai **kode lain**,
+sehingga barang yang dipindai masuk ke kartu stok barang lain. Karena itu:
+
+- **Ujinya memuat DEKODER** (`Code128Test`): ia membaca `<rect>` dari SVG produksi, menyusun ulang
+  deret lebar batang DAN spasi, menghitung ulang digit periksanya dari nol, dan mengembalikan teks.
+  Uji yang menghitung jumlah batang, memeriksa `viewBox`, atau membandingkan snapshot HIJAU untuk
+  kedua kegagalan di atas. Tabel `PATTERNS` sendiri diperiksa terhadap sifatnya (107 simbol, 11
+  modul, 13 untuk stop, elemen 1–4 modul, semuanya unik) — encoder dan dekoder membaca tabel yang
+  sama, jadi satu angka tertukar akan bolak-balik dengan sempurna.
+- **Arti sebuah nilai bergantung pada SET yang berlaku.** Di set C, 99 adalah pasangan angka "99";
+  yang berarti "pindah ke set C" hanya di set A/B, dan yang berarti "pindah ke set B" di set C
+  adalah 100. Dekoder yang mengabaikan itu membaca `ITM-9999` sebagai `ITM-`.
+- **Zona tenang 10 modul WAJIB**, dan dipaku dengan **angka 10**, bukan dengan konstantanya
+  sendiri: uji yang membandingkan lebar terhadap `Code128::QUIET_MODULES` ikut berubah bersama
+  mutasinya, dan menyetel konstanta itu ke 0 — yang membuang seluruh zona tenang dan membuat
+  pemindai gagal diam-diam — lolos HIJAU (diukur).
+- **Teks terbaca-manusia WAJIB**, dari teks yang sama dengan yang dikodekan — dan **DIPATAHKAN,
+  bukan dibiarkan keluar viewport**. `<text text-anchor="middle">` dipusatkan tanpa batas lebar dan
+  akar SVG memotong yang keluar, DI KEDUA UJUNG, diam-diam: barcode 13 digit di bawah kode item 40
+  karakter tercetak sebagai 12 digit yang terlihat lengkap, dan orang yang mengetiknya ulang
+  mendapat "tidak ada item dengan kode itu". Dipatahkan dan bukan dikecilkan fontnya: font yang
+  menyusut sampai muat berhenti bisa dibaca orang.
+- **UKURAN CETAK DIHITUNG DI PHP, TIDAK DISERAHKAN KE CSS.** Lebar modul cetak = lebar kotak ÷
+  `Code128::moduleCount()`, dan di bawah `Code128::MIN_MODULE_MM` (0,25 mm, X-dimension minimum
+  GS1) batangnya menyatu di kertas dan pemindai gagal **diam-diam**. Versi pertama F/LBL memakai
+  `.stiker { width: 62mm }` + `max-width: 100%`: kotaknya tetap dan GAMBARNYA yang dikecilkan —
+  2,8% untuk barcode pemasok 100 karakter, modul 0,055 mm, 0 dari 5 garis pindai terbaca pada
+  raster 600 dpi dari PDF cetaknya sendiri, tanpa satu kata pun di lembarnya. Sekarang **kotaknya
+  yang menyesuaikan** (kisi jatuh 3 → 2 → 1 stiker per baris) dan kode yang tetap tidak muat
+  DITOLAK dengan kalimat yang menyebut panjangnya — aturan kejujuran yang sama dengan karakter di
+  luar ASCII 32–126, karena alasannya sama persis. Opsi `module` hanya memilih satuan viewBox;
+  `widthMm` yang menentukan milimeter di kertas. Uji yang mengukur PIKSEL atribut SVG buta terhadap
+  seluruh kelas cacat ini: tiga mutasi (lebar stiker, `module`, tinggi batang) lolos hijau pada 71
+  uji / 5.963 asersi sebelum uji milimeter ada.
+- **Tinggi batang ≥ 15% lebar simbol** (dan ≥ 8 mm): simbol lebar yang pendek adalah sehelai garis
+  yang tidak bisa dilacak pemindai.
+- **`.lembar` adalah KONTRAK dengan `print.js`, bukan gaya.** `printWhenLoaded()` menunggu
+  `tab.document.querySelector('.lembar')` sebelum memanggil `tab.print()` — `readyState` saja tidak
+  cukup, karena `about:blank` sudah `complete` dan yang tercetak akan menjadi halaman penampung.
+  Lembar bespoke yang tidak mewarisi `forms.layout` **harus membawa pembungkus itu sendiri**: tanpa
+  ia lembarnya tergambar sempurna di tab barunya dan dialog cetak TIDAK PERNAH muncul; sesudah
+  ~7 detik `PRINT_POLL_LIMIT` menyerah tanpa satu pun pesan, dan di gudang itu terbaca sebagai
+  "tombol cetaknya rusak". Dipaku `PrintFormReachabilityTest` untuk SETIAP formulir bespoke.
+- **Barcode ganda disebut DI LEMBARNYA**, sebelum stikernya menempel di rak. Layar pindai memang
+  sudah mengatakannya — tetapi ia mengatakannya berbulan kemudian, ketika seseorang memindai stiker
+  yang sudah tertempel, yaitu pada saat yang paling mahal. Peringatannya berlaku pada **KODE**-nya,
+  bukan pada gambarnya, jadi ia berdiri **di luar** ketiga cabang lembar ini: stiker yang batangnya
+  tidak dicetak justru yang kodenya diketik ulang orangnya. Yang memutuskan "ganda" adalah
+  `Item::matchingScanCode()` — aturan layar Pindai, bukan salinan (§34).
+- **KODE TULIS-TANGAN DIPENGGAL DENGAN ATURAN YANG SAMA** dengan teks di bawah batang
+  (`Code128::wrapLabel`, publik sejak putaran kedua F-6), dan `font-size`-nya dicetak dari konstanta
+  PHP yang sama dengan yang dipakai menghitung penggalannya. Cabang penolakan mewarisi stiker
+  tulis-tangan dari cabang NON-ASCII, yang tidak pernah punya aturan pemenggalan karena kode
+  non-ASCII yang pernah jatuh ke sana selalu pendek: diukur di Chromium (media=print, kotak
+  56,5 mm), 63 karakter = **120,43 mm** dan 100 karakter = **191,10 mm**, mendorong `.lembar` ke
+  252 dan **322 mm** di atas kertas yang lebar isinya 194 mm — dua stiker tetangga tertimpa dan
+  ekor kodenya di luar halaman, di balik 62 uji hijau yang semuanya menguji KALIMAT.
+- **DAN SATU JARING UNTUK SELURUH LEMBAR** (`overflow-wrap: anywhere` pada `body`): setiap teks di
+  lembar ini datang dari data yang diketik orang — nama item (200 karakter), kode (40), barcode
+  (100), satuan, nama perusahaan. Dengan nama 120 karakter DAN barcode 100 karakter, `.lembar`
+  terukur **376,11 mm**; sesudah jaringnya, keempat kombinasi terukur 194,01 mm = lebar isi halaman,
+  0 kotak meluap. Jaring itu **bukan** aturannya: di mana kode tulis-tangan patah tetap diputuskan
+  PHP, supaya angkanya bisa dipaku uji dan barisnya bisa dibaca orang baris demi baris. Harness S33
+  memaku keduanya sekaligus — `Range.getClientRects()` menghitung kotak baris yang BENAR-BENAR
+  digambar, jadi font yang dicetak berbeda dari font yang dipakai menghitung penggalan terlihat di
+  situ meski jaringnya menahan luapannya; lebar barisnya diukur pada SALINAN teksnya dalam probe
+  `white-space: pre`, karena jaring yang sama membuat `scrollWidth` (dan kotak Range) tidak pernah
+  melebihi kotaknya, berapa pun lebar hurufnya. **Kesetaraan "font yang dicetak = font yang dipakai
+  menghitung" dipaku uji PHP** (`LabelBarcodePrintTest`), bukan harness saja: harness bukan bagian
+  gerbang rilis, dan suntingan satu baris pada blade — interpolasi ukuran font menjadi angka tetap —
+  meninggalkan seluruh gerbang phpunit hijau.
+
+**F/LBL adalah formulir BESPOKE**, bukan entri `PrintableDocuments`: registri itu menggambar
+dokumen bertanda tangan (pita empat pihak, blok identitas, tiga kolom tanda tangan), dan lembar
+label adalah kisi stiker yang digunting. Yang dikodekan: `inv_items.barcode` bila kartunya punya,
+`code`-nya sendiri bila tidak — dan lembarnya **menuliskan yang mana**. Kode yang memuat karakter
+di luar ASCII 32–126 mencetak stiker **tanpa batang** beserta kalimatnya; tidak pernah gambar yang
+salah, tidak pernah kosong tanpa keterangan.
+
+**Blade: `@else` yang didahului huruf BUKAN direktif.** Blade mencocokkan dengan `\B@`, jadi
+`…berbeda@else` lolos sebagai teks, cabang `@if` di atasnya menelan sisa berkas, dan seluruh lembar
+gagal dengan "unexpected end of file, expecting elseif". Satu direktif per baris.
+
+## 34. Pindai barcode (`views/pindai.js`, F-6)
+
+**`BarcodeDetector` tidak ada di iOS Safari**, dan itu ponsel separuh lapangan. Keberadaannya
+diperiksa lewat `typeof globalThis.BarcodeDetector` — referensi telanjang ke pengenal yang tidak
+ada adalah `ReferenceError` yang menjatuhkan seluruh layar, termasuk isian manualnya, yaitu
+satu-satunya jalan yang tersisa. **Jalur ketik adalah isian PERTAMA di layar**, bukan jalan pintas
+darurat; kamera adalah tambahan di atasnya.
+
+**Empat keadaan, empat kalimat**, karena keempatnya menuntut tindakan berbeda dari yang membacanya:
+peramban tanpa `BarcodeDetector` (tidak ada yang bisa diperbaiki) · halaman bukan konteks aman
+(kamera memang tidak akan pernah diminta) · izin **ditolak** (ada yang bisa dicabut kembali, di
+setelan situs) · **tidak ada** kamera (bukan soal izin). Plus keadaan kelima yang bukan galat:
+menyala dan belum menemukan apa pun. Satu kalimat untuk keempatnya mengirim orang gudang mencari
+setelan izin di ponsel yang memang tidak punya kamera.
+
+**URUTAN PEMERIKSAANNYA BAGIAN DARI ATURANNYA: `isSecureContext` LEBIH DULU.** `BarcodeDetector`
+ber-`[SecureContext]`, jadi pada asal http ia `undefined` DAN `navigator.mediaDevices` ikut
+undefined. Memeriksa detektornya lebih dulu membuat pemakai http di Chrome Android selalu jatuh ke
+cabang pertama dan membaca "buka halaman ini dengan Chrome di Android" — peramban yang sedang ia
+pakai. Konteks tidak aman adalah sebab yang lebih spesifik: ia menjelaskan ketiadaan keduanya.
+Harness yang menyuntikkan `BarcodeDetector` palsu ke dalam halaman tidak aman menguji kombinasi
+yang tidak pernah diproduksi platform mana pun, dan hijau untuk urutan yang salah.
+
+**SATU PENDENGAR PER TOMBOL.** `ui.js` memasang `onClick:` lewat `addEventListener`; menambahkan
+`node.onclick = …` di atasnya adalah pendengar KEDUA, bukan pengganti. Pada tombol kamera itu
+berarti satu klik menjalankan `startCamera()` DAN `stopCamera()`: akuisisi kedua menimpa `stream`
+sebelum yang pertama sempat dihentikan, dan trek yang benar-benar dilihat orangnya kehilangan
+seluruh rujukannya tanpa pernah di-`stop()` — layar berkata "Kamera belum dinyalakan" sementara
+lampu kameranya menyala terus. Tukar SATU variabel handler, jangan menumpuk pendengar.
+
+**PENCOCOKANNYA TIDAK PEDULI BESAR-KECIL HURUF ASCII, TETAPI PEDULI AKSEN — DAN `UPPER()` SAJA
+TIDAK CUKUP UNTUK ITU.** `UPPER()` di kedua sisi menutup selisih huruf besar-kecil ASCII (SQLite
+peka huruf pada `=`; papan ketik iOS mengapitalkan huruf pertama secara bawaan dan jalur ketik
+adalah satu-satunya jalur di iPhone). Ia **tidak** menetralkan collation: yang membandingkan
+hasilnya tetap collation kolomnya, dan kolom itu `utf8mb4_unicode_ci`, sehingga di MySQL 8.0.46
+`UPPER('café') = 'CAFE'` memulangkan **1**. Terukur dengan kartu `CAFÉ-2026` dan `CAFE-2026`:
+SQLite memulangkan satu item, MySQL memulangkan **dua** dan saringan "Barcode ganda" menyebut
+keduanya ganda — yaitu persis selisih yang `UPPER()` dipasang untuk menutup. Maka di MySQL
+perbandingannya dipaksa `COLLATE utf8mb4_bin` (satu cabang driver, di dalam
+`Item::scanKeyExpression()` saja): yang memutuskan "sama" adalah BYTE hasil `UPPER()`-nya. Pindai
+adalah pembacaan mesin — `café` dan `cafe` adalah dua kode berbeda di setiap pemindai di dunia.
+**Yang MASIH berbeda antara kedua mesin** dan sengaja dibiarkan: huruf besar-kecil DI LUAR ASCII
+(`UPPER()` MySQL melipat `é`→`É`, SQLite tanpa ICU tidak). Selisihnya satu arah — MySQL
+memulangkan kumpulan yang sama atau LEBIH BESAR — jadi produksi tidak pernah diam-diam melewatkan
+tabrakan yang mesin uji lihat, dan kode Code 128 sendiri wajib ASCII 32–126. Isiannya juga membawa
+`autocapitalize="none"` dan `autocorrect="off"` supaya masukannya tidak diubah sebelum kode ini
+melihatnya. Permukaan saudaranya (`GET inventory/items?q=`) sudah menjawab begitu sejak lama.
+
+**Standar target sentuh 42–46 px berlaku untuk SETIAP tombol di layar ini**, bukan hanya isian
+ketiknya: `.btn` 34 px dan `.btn.sm` 28 px adalah kotak yang dicoba ditekan dua kali oleh orang
+bersarung tangan. `.btn.lg` menyetel `width: 100%`, jadi tingginya disetel lewat satu helper —
+bukan ditaburkan per tombol dan terlupa pada tombol berikutnya.
+
+**`video.play()` tidak boleh di-`await`.** Janjinya baru selesai ketika trek mengirim bingkai
+pertamanya; kamera yang menyala tanpa mengirim apa pun menggantung baris itu selamanya, pemindainya
+tidak pernah mulai, dan kalimat di layar berhenti di "Meminta izin kamera…" — yang persis salah.
+
+**Kamera dimatikan lewat `video.isConnected`**, karena router ini tidak punya kait teardown:
+berpindah rute mencabut `<video>` dari dokumen dan putaran pemindai menghentikan treknya sendiri
+≤250 ms kemudian. Tanpa itu lampu kamera tetap menyala dan di Android menahan aplikasi lain.
+**Yang diuji adalah keadaan TREKNYA** (`MediaStreamTrack.readyState`, `stream.active`), bukan
+tombolnya dan bukan kalimat statusnya: melumpuhkan `stopCamera()` sepenuhnya meninggalkan ketiga
+skenario harness F-6 hijau semuanya, dan yang menemukannya adalah orang gudang yang baterainya
+habis sebelum jam dua.
+
+**`inv_items.barcode` NULLABLE dan TIDAK UNIK.** Pemindaian yang menemukan dua item **tidak pernah
+memilihkan**: server memulangkan semuanya dengan `status: 'ambiguous'`, dan layar menampilkan
+keduanya. Memilih diam-diam berarti stok masuk ke kartu barang lain tanpa satu pun pesan, dan
+kekeliruan itu baru terlihat pada opname berikutnya. Pencocokannya **PERSIS**, bukan `like`:
+pemindaian adalah pembacaan mesin, ia tepat atau ia gagal. `items/scan` didaftarkan **di atas**
+`items/{item}` — di bawahnya `scan` tertangkap sebagai `{item}` dan setiap pemindaian menjawab 404.
+
+**"KODE MANA YANG DIANGGAP SAMA" HIDUP DI SATU EKSPRESI: `Modules\Inventory\Models\Item`.**
+`SCAN_KEY_COLUMNS` (`barcode`, `code`) adalah satu-satunya daftar kolom kunci, dan
+`whereScanKeyEquals()` satu-satunya bentuk perbandingannya, di atas satu-satunya ekspresi nilai
+(`scanKeyExpression()`: `UPPER()` di kedua sisi, plus `COLLATE utf8mb4_bin` di MySQL). Di atas
+keduanya berdiri dua scope, untuk dua pertanyaan yang berbeda dengan aturan yang sama:
+
+| scope | pertanyaannya | pemanggilnya |
+|---|---|---|
+| `matchingScanCode($kode)` | item mana yang dipulangkan pemindaian kode INI | `ItemScanController`, `FormPrintService::labelBarcode()` (peringatan ganda pada lembar F/LBL) |
+| `sharingScanCode($ya)` | item mana yang salah satu kodenya juga dijawab item lain | saringan **"Barcode ganda"** pada `GET inventory/items` |
+
+**Tiga salinan adalah bagaimana ia dulu bocor**, dan ketiganya menjawab berbeda: lembar F/LBL
+memakai `where('barcode', …)` yang **peka huruf** di SQLite (jadi ia DIAM untuk `F6DUP001` vs
+`f6dup001` yang layar Pindai sebut ganda) dengan `withTrashed()` (jadi ia MEMPERINGATKAN tentang
+kartu yang sudah dibuang, yang tidak akan pernah dipulangkan pemindaian), dan saringan auditnya
+`GROUP BY barcode HAVING COUNT(*) > 1` — tidak pernah membandingkan barcode dengan **KODE** item
+lain. Untuk `item5.barcode = 'ITM-0002'` (kode item 2), pemindaiannya `ambiguous` dengan dua item,
+kedua lembar labelnya memperingatkan, dan **saringan auditnya memulangkan nol baris**. Itu jawaban
+yang paling mahal yang bisa diberikan permukaan yang dibuat UNTUK keputusan pemilik: ia membaca
+"Tidak ada data", menyimpulkan katalognya bersih, dan menyetujui `UNIQUE` — migrasi yang lalu gagal
+saat deploy. `ScanCodeParityTest` memaku KESETARAAN ketiganya, termasuk satu sapuan katalog yang
+menuntut jawaban yang sama tentang SETIAP item.
+
+**Item yang DIBUANG bukan kembaran**, di ketiga permukaan: pemindaian tidak memulangkannya, jadi
+peringatan "memindai stiker ini akan memulangkan lebih dari satu item" yang datang dari kartu
+terbuang menjanjikan sesuatu yang tidak akan terjadi. Yang boleh `withTrashed()` adalah SUBJEK
+lembarnya (label item terbuang tetap bisa dicetak), bukan kembarannya.
+
+**DAN SUBJEK YANG DIBUANG TIDAK MENGHITUNG DIRINYA SENDIRI.** Yang dijanjikan kalimat di lembar itu
+adalah keadaan PEMINDAIAN kode yang ia cetak, jadi yang dihitung adalah berapa item yang
+`matchingScanCode()` pulangkan — bukan berapa kartu lain yang memakai kodenya. Menghitung kembaran
+dan menganggap subjeknya selalu ikut membuat lembar kartu terbuang memperingatkan "lebih dari satu
+item" sementara layar Pindai berkata "Satu item cocok" untuk kode yang sama, pada jalur yang memang
+sengaja didukung.
+
+**Lengan "Tidak" pada saringannya `whereNotExists`,** bukan `NOT IN` atas daftar barcode:
+`NULL NOT IN (…)` bernilai NULL, bukan true, dan setiap item yang belum punya barcode — sebagian
+besar katalog — lenyap dari lengan itu tanpa satu pun tanda.
+
+## 35. Sapuan dokumentasi saat sebuah layar berubah (F-6, putaran kedua)
+
+Sebuah paket yang menambah tombol, mengganti nama tab, atau mengubah arti sebuah angka
+**menjadikan kalimat yang sudah tertulis di `docs/` SALAH** — dan kalimat yang salah di panduan
+peran lebih mahal daripada kalimat yang hilang: ia dibaca sebagai janji, satu kali, pada hari
+pertama orang itu memakai sistemnya, dan sesudah itu ia tidak membukanya lagi.
+
+**ATURANNYA: grep, lalu HITUNG — sebelum dan sesudah.**
+
+```
+grep -rn "<label layar yang berubah>" docs/ | wc -l      # sebelum: N penyebutan
+# …perbaiki…
+grep -rn "<label layar yang berubah>" docs/ | wc -l      # sesudah: N yang sama, semuanya dibaca
+```
+
+**Perintahnya `grep -rn … | wc -l`, BUKAN `grep -rc …`:** yang terakhir mencetak satu hitungan
+PER BERKAS (`path:n`) dan tidak pernah memulangkan satu angka, jadi ia tidak bisa dipakai
+mengklaim apa pun. Kalau yang dicari adalah "berapa berkas", perintahnya `grep -rl … | wc -l`.
+Diukur hari ini (9 Sep 2026, sesudah putaran ketiga F-6):
+
+```
+grep -rn "Perlu dipesan ulang" docs/ | wc -l      # 28 baris
+grep -rl "Perlu dipesan ulang" docs/ | wc -l      # 10 berkas
+grep -rn "Usulkan PR dari kekurangan ini" docs/ | wc -l   # 6 baris di 4 berkas
+```
+
+(Dua dari 28 baris itu adalah contoh perintah di atas: bagian ini ikut terhitung oleh
+perintahnya sendiri, dan itu bukan alasan untuk tidak menuliskan angkanya.)
+
+Dan LABELNYA harus tetap satu baris di berkas Markdown: pembungkusan baris yang memotong
+"**Perlu dipesan / ulang**" di tengah membuat grep di atas tidak menemukannya lagi — sapuan
+berikutnya melewatkan berkas itu tanpa satu tanda pun. Terjadi pada putaran ketiga ini sendiri:
+dua berkas peran keluar dari daftar berkas (**8**, bukan 10) hanya karena label yang dibungkus
+ulang, dan yang menemukannya adalah angka grep-nya, bukan pembacaan ulang.
+
+Angkanya masuk laporan paket. "Keempat penyebutan sudah diperbaiki" tanpa angka grep-nya adalah
+klaim yang tidak bisa diperiksa siapa pun — dan F-6 membuktikan kenapa: sapuan putaran pertamanya
+menyebut "keempat penyebutan tab" sementara penyebutan yang sebenarnya ada belasan. Yang KELIMA
+berdiri di berkas yang sama dengan salah satu dari keempatnya (`docs/ONBOARDING/procurement.md`),
+dan ia berkata kepada petugas pengadaan bahwa daftar itu "tanpa tombol PR di atasnya" — tombol
+yang justru **hanya dia** yang dapat. Diukur di Chromium,
+dua sesi, tab "Perlu dipesan ulang" pada `#/stock` dengan satu baris kekurangan:
+
+| akun | tombol di tab | tombol di kartu dasbor |
+|---|---|---|
+| `procurement@nusantara.test` | **`Usulkan PR dari kekurangan ini`** | `Buka Stok` |
+| `warehouse@nusantara.test` | (tidak ada — tanpa `prc.create`) | `Buka Stok` |
+
+**DAN PERIKSA KEDUA PERMUKAAN YANG MEMAKAI NAMA YANG SAMA.** "Perlu dipesan ulang" adalah nama
+kartu dasbor DAN nama tab Saldo Stok. Kalimat yang benar tentang kartunya ("daftar yang dibaca")
+menjadi bohong begitu pembacanya mengira ia berbicara tentang tabnya. Sebutkan yang mana, dan
+sebutkan di mana tombolnya berdiri.
+
+## 36. Servis alat: DUA pemicu yang berdiri sendiri (F-7)
+
+`ast_maintenances` membawa dua kolom jatuh tempo, dan keduanya **berdiri
+sendiri-sendiri**: `next_due_date` (kalender, migrasi 000530, diawasi
+`WatchedDeadlines` entri `maintenance_next_due`) dan `next_due_hour_meter`
+(jam operasi, migrasi 000545, diawasi `WatchedThresholds` entri
+`maintenance_hour_meter`). **Yang mana pun tercapai lebih dulu, servisnya jatuh
+tempo.**
+
+**PERMUKAAN YANG MENEGAKKANNYA, DIDAFTAR — bukan "tidak ada permukaan yang
+boleh".** Kalimat universal itu tidak benar dan sudah tidak dipakai lagi
+(verifikasi F-7): daftar perawatan punya dua kolom, formulirnya dua kotak,
+kartu aset menaruh "Pemicu tanggal" di stat row yang sama dengan sisa jamnya
+(dengan umur relatifnya, merah bila sudah lewat), kartu aset cetak menaruh
+keduanya di satu sel ("14 Desember 2026 / 5.500 jam"), dan catatan setiap
+baris registri jam menyebut tanggal jatuh temponya. **Layar Tenggat SENGAJA
+hanya bicara tanggal** — ia adalah layar pengawas tenggat, entrinya
+`maintenance_next_due` tidak membawa kolom nilai, dan sisi jam memang tidak
+mengirim pemberitahuan pagi (keputusan pemilik 4). Pembaca yang perlu sisi
+jam pergi ke **Ringkasan › Ambang & Batas**. Membawa target jam ke baris
+Tenggat adalah keputusan pemilik yang terbuka (LAPORAN-PAKET-HM-F-7 §8),
+bukan aturan yang sedang dilanggar.
+
+**Judul kartu di halaman aset menyebut sisi yang dihakimi lencananya**
+("Servis berikutnya menurut jam"): lencana itu dihitung dari keadaan JAM
+saja, dan sebuah kartu berjudul "Servis berikutnya" yang berlencana hijau
+"Aman" di atas tanggal servis yang lewat 86 hari adalah vonis yang menyamar
+sebagai vonis atas keduanya.
+
+**DUA DEFINISI, DITULIS SEKALI DI `Assets\Services\MaintenanceDueService`:**
+
+1. **"Pembacaan hour-meter terakhir" = pembacaan TERTINGGI yang tercatat**,
+   bukan yang terbaru menurut `(log_date, id)`. Meter tidak berjalan mundur:
+   angka yang turun hanya punya dua sebab (meter diganti, salah ketik) dan tidak
+   satu pun berarti mesinnya berjalan lebih sedikit. Dengan "yang terbaru", satu
+   digit yang hilang mengubah 5.120 jam yang sudah lewat target 5.000 menjadi
+   512 jam yang "masih 4.488 jam lagi" — alarm mati persis pada alat yang paling
+   perlu dilihat. Penjaga monoton `EquipmentLogService` hanya berlaku DI DALAM
+   satu mobilisasi; penggantian meter justru terjadi di antara dua mobilisasi.
+   Pembacaan terbaru tetap dibawa (`latest_reading`), dan bila lebih rendah,
+   layar **mengatakannya** dengan pita peringatan.
+   **HARGANYA, karena ia nyata:** MAX melindungi dari salah ketik yang TURUN
+   dengan cara yang membuat salah ketik yang NAIK — dan penggantian meter —
+   tidak bisa dikoreksi siapa pun. Terukur lewat HTTP: 33.755 di atas 3.375,5
+   pada alat bertarget 3.400 jam mengunci "Melampaui batas · lewat 30.355
+   jam", dan keempat pintunya tertutup (pembacaan berikutnya yang lebih
+   rendah 422 di mobilisasi yang sama; PUT dan DELETE ditolak; baris koreksi
+   di mobilisasi BARU diterima dan tidak mengubah vonisnya). Kalimat
+   penolakan register mengatakan hal ini sekarang; MEKANISME koreksinya
+   (penanda koreksi pada `ast_equipment_logs`, atau puncak yang dihitung
+   sejak tanggal kartu servis yang berlaku) adalah keputusan pemilik yang
+   terbuka — LAPORAN-PAKET-HM-F-7 §8.
+2. **"Target yang berlaku" = milik catatan perawatan TERBARU** (menurut
+   `maintenance_date`, lalu `id`) — **baris yang sama** yang dibaca pemicu
+   tanggal lewat `latest_per_group`. Kartu servis terbaru menggantikan rencana
+   sebelumnya; "target terkecil yang belum terlampaui" akan menghidupkan lagi
+   target yang sudah digantikan mekanik, dan membuat dua pemicu pada satu tabel
+   membaca dua baris yang berbeda. Kartu terbaru yang lupa mengisi target jam
+   menjadi `TANPA_BATAS`, bukan mewarisi target lama.
+
+**TIDAK TERUKUR BUKAN NOL, DAN ADA TIGA SEBABNYA** — tiga kalimat, bukan satu
+"—", karena jalan keluarnya berbeda: belum pernah dimobilisasi / mobilisasinya
+belum punya satu log pun / lognya ada tetapi `hour_meter`-nya NULL pada semuanya
+(kolom itu nullable karena mengisi solar tanpa mencatat jam adalah kejadian biasa
+di lapangan). 0 jam adalah PEMBACAAN — mesin baru yang meterannya masih nol.
+
+**SIAPA YANG DIAWASI.** Alat yang punya target jam ATAU punya pembacaan jam;
+yang tidak punya keduanya bukan alat berjam (scaffolding, rak server) dan tidak
+dibariskan sebagai "belum terukur" selamanya — aturan "masih urusan seseorang"
+milik `WatchedDeadlines`. **Aset `disposed` dan yang dihapus lunak keluar dari
+KEDUA pemicu**, dan `MaintenanceHourMeterDueTest` menanyai keduanya atas satu
+aset yang sama, karena aturan yang benar di satu pemicu dan bocor di pemicu kedua
+adalah cacat yang berulang di kampanye ini.
+
+**AKIBAT PADA PEMICU TANGGAL.** `alarm_when_date_missing` milik
+`maintenance_next_due` kini dipersempit `missing_scope`: kartu servis yang
+menjadwalkan **dengan jam saja** bukan kartu tanpa jadwal, dan alarm yang
+menghukum pemakaian yang benar adalah alarm yang diajari orang untuk diabaikan.
+Penjaga kolom ada DI DALAM closure (pola `superseded_at`), bukan di `columns` —
+yang di `columns` menggugurkan SELURUH entri saat kolomnya belum ada.
+
+**`next_due_hour_meter` nullable, `gt:0` DAN `decimal:0,3` di request.** NULL
+berarti "belum disetel"; nol adalah ANGKA (§24: batas tidak pernah disimpulkan
+dari nilainya),
+dan "servis pada jam ke-0" tidak berarti apa pun untuk mesin mana pun — menerima
+0 akan melahirkan keadaan `TANPA_ANGGARAN` ("Tidak dianggarkan") di sisi jam,
+tempat kalimat itu tidak punya arti. Presisinya `decimal(15,3)`, sama persis
+dengan `ast_equipment_logs.hour_meter`: kedua sisi perbandingan
+"pembacaan >= target" harus punya presisi yang sama — dan **`gt:0` sendirian
+tidak cukup** (verifikasi F-7): ia menghakimi angka yang DIKIRIM, jadi 0,0004
+lulus lalu tersimpan `0.000` dan melahirkan keadaan yang paragraf ini bilang
+mustahil. `decimal:0,3` di kedua pintu tulis memvalidasi presisi yang
+benar-benar disimpan, dan kotak formulirnya berlantai 0,001 — bukan 0, yang
+berselisih dengan gerbang servernya sendiri.
+
+## 37. Masa berlaku lampiran (`core_attachments.valid_until`, F-8)
+
+Satu kolom `date` nullable pada tabel yang tumbuh paling cepat di aplikasi, dan **NULL
+adalah keadaan NORMAL**: hampir setiap baris `core_attachments` adalah foto lapangan, nota
+atau gambar kerja yang tidak punya — dan tidak akan pernah punya — masa berlaku.
+
+**Empat keadaan, dan yang pertama bukan cabang dari tiga lainnya.** Dihitung SEKALI, di
+server (`Modules\Core\Models\Attachment::validityState()`), lalu ikut setiap lampiran yang
+diserialisasi sebagai blok `validity` (`state`, `days`, `lead_days`):
+
+| Keadaan | Arti | Di kartu lampiran |
+|---|---|---|
+| `tanpa_masa_berlaku` | `valid_until` NULL — berkas biasa | teks polos, **bukan lencana** |
+| `berlaku` | > 30 hari lagi | teks polos |
+| `menipis` | ≤ 30 hari lagi, termasuk hari terakhirnya | lencana kuning |
+| `kedaluwarsa` | tanggalnya sudah lewat | lencana merah |
+
+`Attachment::VALID_UNTIL_LEAD_DAYS` = **30**, dan angka itu dibaca DUA permukaan: kartu
+lampiran dan entri `WatchedDeadlines`. Angka kedua di salah satunya adalah cara termurah
+membuat kartu berkata "masih berlaku" sementara kotak masuk pagi berkata "mendekati akhir
+masa berlaku" tentang berkas yang sama — kontradiksi yang sudah dibayar dua kali (F-3
+aktivitas CRM, F-7 servis alat). **Hari terakhirnya MASIH berlaku** (`valid_through_end`),
+bacaan yang sama dengan `VendorDocument::isExpired` dan `Guarantee::isExpired`.
+
+**Pintu tulisnya tiga, dan semuanya menuntut izin yang sama dengan mengubah lampirannya**
+(`{prefix}.update` dokumen pemiliknya, diturunkan dari `AttachableDocuments`): `POST
+core/attachments` (JSON base64), `POST core/attachments/upload` (multipart, kelas 25 MB),
+dan `PATCH core/attachments/{id}` — yang HANYA menerima `valid_until`, dengan aturan
+`present` supaya mengosongkan harus dikatakan dan bukan terjadi karena kuncinya lupa
+dikirim. Nama, isi, sha256 dan geotag sebuah berkas adalah fakta saat ia diunggah.
+
+**Pengawasnya DUA BELAS entri, satu per prefix izin**, dibangkitkan dari
+`AttachableDocuments::byPrefix()` (`attachment_valid_until_<prefix>`). Sebuah temuan
+`WatchedDeadlines` membawa SATU izin dan SATU judul; satu entri untuk seluruh tabel berarti
+memilih satu izin untuk 40 jenis dokumen dari 12 modul, dan izin apa pun yang dipilih salah.
+
+Dua bendera registri lahir di sini (kamus lengkapnya di kepala `WatchedDeadlines`):
+
+- **`dateless_is_normal`** — mematikan baris `BLIND` milik `scan()` untuk entri ini. Tanpa
+  itu, 40.000 foto lapangan tanpa tanggal dilaporkan sebagai "data yang hilang" setiap pagi.
+  Ia juga membuang dua `COUNT(*)` **tanpa saringan tanggal** atas tabel terbesar aplikasi —
+  satu-satunya kueri registri ini yang menyentuh seluruh tabel. Diukur di MySQL 8 atas
+  40.000 lampiran tanpa tanggal (9 Sep 2026): cabang BLIND untuk 12 entri lampiran
+  **246,4 ms**, `attachment_valid_until_prj` sendirian **172,4 ms** (rantai OR delapan
+  cabangnya harus dievaluasi untuk setiap baris karena tidak ada saringan tanggal yang
+  memotongnya lebih dulu) — di atas `scan()` penuh yang **106,1 ms**. Benderanya menahan
+  layar Tenggat dari menjadi 3,3x lebih lambat untuk mencetak 12 baris yang salah. Saling
+  eksklusif dengan `alarm_when_date_missing`, dipaku uji.
+- **`calendar_source`** — `false` mengeluarkan entri dari `CalendarEvents`. Bawaannya
+  `true`; sejauh ini hanya lampiran memakainya (alasannya di `CalendarEvents::sources()`).
+
+**Induk yang sudah tidak ada tidak berbunyi.** Kelas di luar registri tidak pernah masuk
+cakupan; induk yang dihapus lunak atau permanen gugur lewat `EXISTS` per kelas atas kolom
+`table` — **literal string baru di `AttachableDocuments`**, dipaku `AttachmentRegistryTest`
+terhadap model aslinya. Penjaga `deleted_at` duduk DI DALAM closure (pola `missing_scope`
+F-7), bukan di `columns`: `hr_attendances` memang tidak menghapus-lunak, dan mendaftarkannya
+akan menggugurkan seluruh entri `hr`.
+
+### Indeks — EXPLAIN kedua driver
+
+Indeksnya **`(attachable_type, valid_until)`**, bukan `(valid_until)`. Diukur 9 Sep 2026
+atas 40.000 baris tiruan (38.577 foto laporan harian, 59 baris bertanggal), kueri
+`attachable_type IN (…3 kelas prj…) AND valid_until <rentang>`:
+
+```
+SQLite, TANPA ANALYZE — keadaan produksi; repo ini tidak pernah menjalankannya
+  indeks (valid_until)                 SEARCH … USING INDEX …attachable_type_attachable_id…   14,689 ms
+  indeks (valid_until, attachable_type) SEARCH … USING INDEX …attachable_type_attachable_id…  14,758 ms
+  indeks (attachable_type, valid_until) SEARCH … USING COVERING INDEX …type_valid_until…       0,024 ms
+
+MySQL 8 (erp_scratch, sesudah ANALYZE TABLE)
+  tanpa indeks baru                     type=ALL   key=NULL          rows=39.844  Using where           44,530 ms
+  indeks (valid_until)                  type=range key=valid_until   rows=34      Using index condition  0,276 ms
+  indeks (attachable_type, valid_until) type=range key=type_valid    rows=35      Using where; Using index 0,382 ms
+```
+
+Perencana SQLite tanpa statistik **selalu** memilih indeks kesetaraan yang sudah ada dan
+mengabaikan indeks satu kolom `valid_until` sepenuhnya. Hanya pasangan berawalan
+`attachable_type` dipakai kedua driver tanpa ANALYZE, dan di keduanya ia COVERING.
+Rencana kueri PENGAWAS YANG SEBENARNYA (bukan kueri contoh) dipaku
+`AttachmentDeadlineWatchTest::test_the_registry_scope_itself_is_planned_through_the_pair_index`.
+
+Dan itu memang kueri registrinya sendiri, bukan bentuk sederhananya — `EXPLAIN` MySQL 8
+atas `WatchedDeadlines::scoped()` + saringan LEWAT, 40.000 lampiran di `erp_dryrun`:
+
+```
+attachment_valid_until_prj   PRIMARY   core_attachments  type=range key=…type_valid_until… rows=40  Using index condition; Using where
+                             DEPENDENT SUBQUERY x8       type=eq_ref key=PRIMARY           rows=1   (penjaga induk per kelas)
+                             1,357 ms/kueri
+attachment_valid_until_fin   PRIMARY   core_attachments  type=range key=…type_valid_until… rows=6   Using index condition; Using where
+                             DEPENDENT SUBQUERY x6       type=eq_ref key=PRIMARY           rows=1
+                             0,846 ms/kueri
+scan() penuh, 34 entri: 109,8 ms
+```
+
+Penjaga induk per kelas tidak mengubah rencananya: setiap `EXISTS` diselesaikan lewat
+PRIMARY KEY induknya (`eq_ref`, rows=1) atas baris yang SUDAH dipotong indeks tanggal.
+
+## 38. Kanal notifikasi luar — kejujuran status, template, preferensi, WhatsApp (P-3a)
+
+**`sent` adalah klaim, `skipped` adalah kejujuran.** Sebuah baris `core_notification_deliveries`
+hanya boleh `sent` bila **penyedia memberi pengenal** (`provider_id`: Message-ID setelah
+percakapan SMTP selesai; `wamid` dari Meta). Kanal yang memulangkan null/kosong dicatat
+sebagai percobaan gagal, bukan terkirim (`DeliverNotification`). Diukur 11 Sep 2026 sebelum
+P-3a: `MAIL_MAILER=log` (keadaan .env pengembangan DAN produksi) menghasilkan `sent` dengan
+Message-ID buatan lokal `…@example.co.id`.
+
+**Empat hasil job**, dibedakan karena akibatnya berbeda bagi pembaca layar Pengiriman
+Notifikasi: `sent` (pengenal ada) · `skipped` (`DeliverySkippedException` atau gerbang —
+tidak pernah dicoba, tanpa ulang, sebab di `error`) · `failed` seketika
+(`DeliveryRejectedException` — penolakan permanen: token, template, nomor bukan WhatsApp) ·
+`failed` setelah 5 percobaan (pengecualian biasa; backoff 60/300/900/3600 detik, dipaku
+literal `DeliveryRetryScheduleTest` DAN diukur lewat pekerja sungguhan).
+
+**Satu daftar sebab, empat permukaan.** `Core\Support\DeliveryGate::reasonToSkip(channel,
+penerima, kunci template)` adalah SATU-SATUNYA tempat sebab `skipped` ditulis, dan dipanggil
+oleh kotak keluar (`NotificationService::outbox` → tulis `skipped`), Kirim ulang (`retry` →
+422 + petunjuk, `retryRefusal`), job (`handle` → diperiksa ULANG saat berjalan: keadaan bisa
+berubah sejak baris ditulis), dan `GET core/me/notification-channels` (layar Profil). Urutan
+sebabnya dari yang paling global: sakelar Pengaturan → konfigurasi server (`MailTransport`,
+`WhatsAppSetup`) → pilihan pengguna → alamat/nomor → opt-in → template peristiwa. Menambah
+sebab = satu konstanta + satu cabang di sini, tidak pernah `if` di kanal. `Iam\Support\
+PasswordHelp::resetByEmail()` membaca `MailTransport` yang sama, supaya halaman masuk dan
+kotak keluar tidak berselisih tentang apakah surat keluar dari mesin.
+
+**Satu baris per kanal luar per penerima** (`DeliveryGate::USER_CHANNELS` = email, whatsapp; sejak
+P-3e ditambah webpush, yang ber-FAN-OUT per perangkat — §42),
+masing-masing di balik `guard()`-nya sendiri, SESUDAH semua baris kotak masuk ditulis (P-0b).
+Dengan ketiga sakelar mati (bawaan) setiap notifikasi menghasilkan tiga baris `skipped` —
+(web push tanpa perangkat terdaftar juga satu baris: fan-out per perangkat atas nol perangkat tetap
+menulis satu baris yang menyebut sebabnya, bukan diam) —
+pertumbuhan tabel adalah keputusan pemilik (LAPORAN P-3a), bukan alasan menyembunyikan baris.
+
+**Template per peristiwa** — `Core\Support\NotificationTemplates`: PERSIS lima kunci
+`deadline.due`, `approval.escalated`, `ar.dunning`, `backup.stale`, `scheduler.down`
+(dipaku literal), disimpan di `core_notifications.template` (migrasi 001801) oleh
+`NotificationService::system(..., $template)`; kunci salah eja ditolak, bukan disimpan sebagai
+umum. Peristiwa lain (`document.*`, pengingat persetujuan yang belum eskalasi, tutup buku,
+`TANPA_TANGGAL`) memakai **template umum** `ApprovalNotificationMail` — dikatakan di
+`forNotification()` (null) dan di `MailChannel`, tidak ditebak dari judul. Surel per peristiwa =
+`EventNotificationMail` (awalan subjek `[Cadangan]` dst., kalimat pembuka, label tombol).
+Pemetaan pengawas: watchdog → `scheduler.down`; ketujuh alarm backup-watch → `backup.stale`;
+approval-watch → `approval.escalated` HANYA saat eskalasi; deadline-watch → `ar.dunning` untuk
+`ar_invoice_due` LEWAT, `deadline.due` untuk tanggal lain (`forDeadlineFinding`).
+
+**Kontrak placeholder WhatsApp**: tiga, tetap, untuk kelima template — `{{1}}` judul, `{{2}}`
+isi (diratakan: tanpa baris baru/tab/4+ spasi, ≤ 400 karakter), `{{3}}` tautan atau `-`
+(`whatsappParameters`). Pemilik mengajukan template ke Meta dengan tiga placeholder itu; nama
+yang disetujui diisi di `WHATSAPP_TEMPLATE_<PERISTIWA>` (.env, kosong di repo).
+
+**Preferensi kanal dan jam tenang hidup di `UserPreferences` (§15), bukan tabel baru**:
+`notify.channels` `{email, whatsapp: bool}` (kunci yang tidak disebut = nyala; plafon 256 B)
+dan `notify.quiet_hours` `{start, end: "HH:MM"}` atau **`false`** (bukan null — kolom `value`
+NOT NULL dan preferensi tidak punya DELETE; plafon 64 B; `start ≠ end`). Alasannya: keduanya
+"apa pun yang seseorang PILIH untuk dirinya sendiri", whitelist/plafon/endpoint sudah ada, tanpa
+migrasi. Yang menuntut kolom sungguhan adalah **persetujuan**, karena preferensi boleh dihapus
+tanpa jejak. SPA menulis kedua kunci LANGSUNG (`PUT core/me/preferences/<kunci>`) dari
+`views/profil.js`, bukan lewat `prefs.set()` — keduanya dibaca SERVER, bukan SPA, jadi tanpa
+cermin localStorage, dan 422 whitelist harus sampai ke orangnya (prefs.set menelannya).
+
+**Jam tenang MENUNDA, tidak pernah membuang, tidak pernah menyentuh kotak masuk** —
+`Core\Support\QuietHours`, zona **Asia/Jakarta tetap** (tidak ada kolom zona per pengguna
+sebelum ada pengguna di luar WIB). Baris kotak keluar tetap `queued` dengan `next_attempt_at` =
+akhir jendela, kalimat "Ditunda oleh jam tenang penerima (22:00–06:00 WIB) sampai … — tidak
+dibuang" di `error`, job ber-`delay` sama; dihitung di kotak keluar, Kirim ulang, dan job.
+Di job, penundaan BUKAN `release()`: `release()` memakan satu hitungan percobaan PEKERJA per
+jendela, dan diukur 12 Sep 2026 empat kegagalan SMTP sementara + satu penundaan = pekerja
+menggagalkan job pukul 06:00 SEBELUM percobaan kelima ("Percobaan habis"). Job yang tertunda
+selesai dan mewariskan sisa jadwalnya kepada job pengganti (`DeliverNotification::$priorAttempts`,
+`$tries` sisa, `backoff()` dipotong) yang menunggu akhir jendela — lima percobaan tetap lima,
+1/5/15/60 berlanjut dari posisinya, `attempts` baris tetap riwayat; kalimat penundaan bukan
+pesan penyedia dan tidak dibawa `failed()` (`QuietHours::isPostponedSentence`). Jendela
+melintasi tengah malam: awal inklusif, akhir eksklusif, sisi malam → besok pagi, sisi pagi →
+hari ini. `resumeAt()` memulangkan zona aplikasi — Eloquent memformat Carbon dalam zona objeknya,
+dan Carbon UTC di kolom `datetime` bergeser tujuh jam (kelas cacat absensi F-4; ditemukan lagi
+di webhook `createFromTimestamp`, dikonversi sebelum disimpan).
+
+**WhatsApp = Meta Cloud API langsung, HANYA template, tanpa SDK** (`Core\Channels\WhatsAppChannel`,
+`Http::`). Pemeriksaan konfigurasi SEBELUM `Http::` — tanpa kredensial nol permintaan keluar;
+uji memasang `Http::preventStrayRequests()` di `setUp`. Kode Meta permanen di
+`WhatsAppChannel::PERMANENT_CODES` + HTTP 401/403 → `DeliveryRejectedException`; 429/5xx/
+jaringan → diulang (status HTTP menang atas kode di badan). Penyedia: `meta`; `qontak`
+dikenali tetapi pengirimnya belum ditulis (skipped yang mengatakannya — bentuk API tidak
+dikarang); gateway WhatsApp Web (Fonnte dsb.) tidak punya mode. Semua konfigurasi di
+`config('erp.whatsapp')` dari `.env`, KOSONG di repo (`WhatsAppSetup`).
+
+**Rahasia tidak bocor lewat kolom error** — `Core\Support\ProviderErrorScrubber`: setiap
+rahasia yang dikenal → `[rahasia]`, `Bearer …` → `Bearer [rahasia]`, `token=…`/`secret=…` →
+`=[rahasia]`, query string URL → `?[…]`, deretan 8–15 digit → `[nomor]`, potong 480. Kode
+galat Meta (≤ 6 digit) tidak tersentuh. Setiap kalimat yang meninggalkan `WhatsAppChannel`
+dan webhook melewatinya; dipaku dengan token palsu yang dicari kembali di kolom error dan
+jawaban API.
+
+**Webhook status** (`Modules/Core/Routes/web.php`, tanpa grup web/CSRF): GET verifikasi
+`hub.challenge` hanya bila `WHATSAPP_VERIFY_TOKEN` cocok; POST diverifikasi
+`X-Hub-Signature-256` = HMAC-SHA256(**badan mentah** `getContent()`, App Secret) dengan
+`hash_equals` — hilang/salah/secret kosong = 403 tanpa menyentuh satu baris pun; hanya
+memperbarui baris `whatsapp` yang `provider_id`-nya cocok (`provider_status`
+sent<delivered<read tidak pernah menurun; `failed` → `status` failed + pesan Meta tersaring),
+tidak pernah membuat baris, wamid asing 200-dan-abaikan (Meta mengulang yang bukan 200).
+Migrasi 001802: `provider_status`, `provider_status_at`, indeks `provider_id`.
+
+**Nomor E.164 + opt-in berstempel waktu** — `users.phone_e164`, `whatsapp_opt_in_at`,
+`whatsapp_opt_in_via` (`profil` | `admin`; migrasi Iam 000252). `Core\Support\PhoneNumber`:
+satu bentuk simpan `^\+[1-9]\d{7,14}$`, 08… → +62…, digit telanjang ditolak.
+`Core\Support\WhatsAppConsent::apply()` adalah SATU-SATUNYA penulis ketiga kolom (forceFill,
+bukan fillable): ganti nomor mengosongkan stempel; stempel yang ada tidak ditulis ulang;
+`false` mencabut; nomor kosong mencabut. Dua pintu: `PUT iam/me/phone` (orangnya, via
+`profil`) dan `PUT iam/users/{id}` (administrator, via `admin`); `UserResource` memulangkan
+`whatsapp_opt_in` sebagai TURUNAN supaya formulir generik membulatkannya kembali.
+
+**Layar**: `#/profil` (`views/profil.js`, NAV Ringkasan, tombol di menu akun) menampilkan
+keadaan tiap kanal dari `GET core/me/notification-channels` — sebab yang SAMA yang akan ditulis
+kotak keluar — dan kesiapan WhatsApp yang DIUKUR ("template disetujui Meta 0 dari 5").
+Pengiriman Notifikasi mendapat kolom "Berikutnya" (`next_attempt_at`) dan "Status penyedia"
+(`waProviderStatus`). Sistem › Pengguna mendapat nomor + opt-in.
+
+## 39. Registri format DJP/BPJS dan aturan NPWP/NIK/NITKU (P-3b)
+
+**Tidak mengarang tata letak berkas DJP.** `Modules\Finance\Support\DjpFormats` mendaftar
+SETIAP format keluaran pajak yang ada atau direncanakan — PERSIS lima kunci literal:
+`efaktur_csv_legacy` (ada), `efaktur_coretax_xml` (menunggu template), `ebupot_unifikasi_csv`
+(ada), `ebupot_2126_bulanan` (menunggu template), `sipp_bpjs` (menunggu template) — masing-
+masing dengan `verified_against`: path berkas contoh resmi di `docs/samples/pajak/` + tanggal,
+atau **null = "BELUM DIVERIFIKASI terhadap template DJP"** (BPJS untuk SIPP). `describe()`
+adalah fungsi murni: klaim yang berkasnya tidak ada di pohon diturunkan kembali ke belum
+diverifikasi. Kalimatnya sampai ke TIGA permukaan dari satu sumber: `GET finance/tax-exports`
+(`data.formats` + `data.<tab>.format` + `data.formats_summary`), layar Ekspor Pajak (`.djp-format`
+per entri — teks lencana `badge_label` dan lencana hitungan `formats_summary.label` digambar apa
+adanya, SPA hanya memilih warnanya dan tidak menyusun satu kata pun; kartu dan setiap tingkat grid/flex
+di dalamnya `min-width: 0` dan lencananya boleh membungkus — di 390 px isi terpanjang dulu melebarkan
+track 22 px melewati viewport dan teks terpotong tanpa gulir samping (R3-kejujuran-3; S38m mengukur
+simpul teks yang keluar viewport); tombol `Unduh CSV` hanya
+dari `downloadable`; `DjpFormatsTest` memaku bahwa `taxexport.js` tidak memuat string
+berisi «diverifikasi»/«sesuai»/«coretax» dan hanya punya satu literal `Unduh` di dalam cabang
+`exp.format.downloadable`), dan berkas unduhan (`DjpFormats::filename` → akhiran `-belum-diverifikasi`,
+`stampCsv` → satu baris komentar `#` di atas yang DITUTUP `FIRST_LINE_INSTRUCTION` "Hapus baris
+pertama ini sebelum mengimpor" dan diulang ke layar lewat `file_note` registri — V3b-7; **writer
+kolom tidak disentuh**, berkas yang sudah diverifikasi dikembalikan apa adanya). Baris yang
+diekspor dengan NPWP ≠ 15 digit (16 = NIK/NPWP baru, 22 = NITKU) pada skema yang mengasumsikan
+15 digit TIDAK ditahan dan kolomnya tidak diubah, tetapi disebut di `notes` + `summary.noted`
+(`TaxExportService::npwpShapeNoteFor(entri describe(), …)` — murni atas ENTRI registri agar cabang
+"hilang sesudah diverifikasi" bisa dipaku dengan entri buatan, R2-kejujuran-1; kartu
+`.djp-npwp-notes`, paku struktural atas penjaganya di `taxexport.js`, R2-kejujuran-2) selama
+formatnya belum diverifikasi — V2-6. Nama jenis di kalimatnya pendek ("22 digit (NITKU)"), bukan
+label registri yang menyarangkan kurung — R2-kejujuran-3. Format "menunggu template" `downloadable: false`
+dan membawa `awaiting_file` yang menyebut berkas apa yang harus diletakkan. Menambah format =
+satu entri di sini + satu baris di `docs/samples/pajak/README.md` (dipaku `DjpFormatsTest`:
+README menyebut setiap kunci dan pola nama berkas, dan TIDAK memuat nama kolom skema mana
+pun). Daftar tutup buku membaca kalimat yang sama ("siap masuk berkas ekspor pajak — …").
+Parameter `format=coretax_xml` SENGAJA tidak ada sampai template resminya ada.
+
+**NPWP: satu kelas, satu Rule, SEMUA pintu tulis.** `Modules\Core\Support\Npwp` (di Core
+karena kolomnya milik empat modul; pola `PhoneNumber`): klasifikasi HANYA dari panjang digit
+setelah titik/strip/spasi dibuang — **15** = NPWP format lama, **16** = NPWP baru (orang
+pribadi = NIK), **22** = NITKU — TANPA digit periksa (DJP tidak menerbitkannya untuk
+NIK/NPWP-16; "000000000000000" sah dan dipaku). Tampilan: 15 berformat cetak lama, 16/22
+digit utuh; nilai lama yang tidak dikenali dipulangkan apa adanya. `Modules\Core\Rules\
+ValidNpwp` dipasang di KEDELAPAN pintu: Customer/Vendor/Employee Store+Update, `PUT core/company`,
+kolom `npwp` `ImportableResources` (vendors/customers/employees — daftar dipaku literal
+`NpwpTest`), dan kolom `number` Dokumen Vendor **hanya bila `doc_type = npwp`**
+(`VendorDocumentStoreRequest::npwpRuleFor`; jenis lain bebas bentuknya — V3-5; mengganti jenis
+dokumen lain MENJADI npwp diperiksa penuh — juga bila nomornya tidak dikirim: nomor tersimpan
+diperiksa lewat `withValidator`, R2-pintu-4). Kolom `nik_ktp` importer karyawan = `digits:16`,
+persis aturan formulir (`size:16` dulu meloloskan enam belas HURUF — V3-3) — dan **maju-saja di
+kedua pintu** (R2-pintu-1): kolom importer menandai `'forward_only' => ['digits:16']`
+(`MasterDataImportService::prepare` membuang aturan bentuk itu bila nilai yang dikirim PERSIS sama
+dengan yang tersimpan), `EmployeeUpdateRequest::nikUnchanged()` melakukan hal yang sama pada PUT;
+keunikan NIK tidak pernah ikut maju-saja. `EmployeeService::nextCode()` hanya menghitung kode
+berpola `EMP-<1–9 digit>` dengan jaring berbatas 10.000 percobaan (R2-pintu-2: satu kode impor 'EMP-X'
+dulu membuat setiap tambah pegawai 500; R3-pintu-1: 'EMP-' + 20 digit dulu menjadi PHP_INT_MAX → float
+'EMP-9.2233720368548E+18' dan jaring `while` tidak pernah selesai).
+`lang/id/validation.php` memuat SETIAP kunci pesan bawaan Laravel (dipaku `VendorNpwpGateTest`
+terhadap `vendor/laravel/framework/.../lang/en/validation.php`, kunci DAUN lewat `Arr::dot` — R2-pintu-5:
+`Rule::enum` dulu menjawab "The selected Jenis is invalid."; R3-pintu-2: pembanding tingkat atas
+meloloskan sub-kunci `password.*` yang hilang).
+**Maju-saja**: `ValidNpwp::unlessUnchanged($tersimpan)` pada pintu UPDATE DAN
+pada baris impor yang kodenya sudah ada (`MasterDataImportService::prepare` menukar aturan
+kolom itu per baris dengan nilai tersimpan — ekspor aplikasi selalu membawa kolom `npwp`, jadi
+impor-balik tanpa ini menyandera setiap baris warisan) — nilai yang dikirim kembali PERSIS
+sama bukan penulisan baru; nilai yang berubah dan baris baru diperiksa; tidak ada backfill,
+tidak ada penolakan saat dibaca/dicetak/diekspor. Yang disimpan = yang
+diketik (dipangkas). Pintu baru yang menerima NPWP = satu baris `new ValidNpwp` /
+`unlessUnchanged`, tidak pernah regex sendiri.
+
+**Rekap PPh 21/26 bulanan = rekap INTERNAL, bukan berkas impor DJP.**
+`Modules\HrPayroll\Services\Pph21RecapService::monthly()` membaca SNAPSHOT `hr_payslips`
+(`ter_category`, `ter_rate`, `pph21_amount`) dari run `approved`/`closed` saja (status yang
+sama dengan `decemberTax` dan `TaxEqualizationService`); draf/diajukan/ditolak disebut di
+`runs.excluded` beserta statusnya; satu baris per pegawai per masa (gaji + THR dijumlahkan,
+setiap slip disebut di `slips`); identitas dari master pegawai: npwp bila dikenali → NIK bila
+16 digit → **sel kosong** (bukan 0, bukan garis) + `tax_id_issue` + `summary.without_tax_id`.
+**Sel kosong ≠ tambahan 20 %** (V2-7/V3b-3, R2-rekap-1): payroll memakai `Employee::hasTaxId()`
+= kolom NPWP ATAU NIK terisi APA PUN — SAAT RUN DIHITUNG — jadi baris warisan ber-NIK "BELUM-ADA"
+dipotong tarif normal. Flag itu DIBEKUKAN di slip (`hr_payslips.has_tax_id`, migrasi HrPayroll
+001093, ditulis `PayrollService::build*Payslip`); rekap membacanya dari sana — bukan dari data
+pegawai hari ini, yang berbalik begitu HR melengkapi NIK sesudah run. Slip lama (null) disimpulkan
+dari angkanya bila deterministik (gaji bulanan non-Desember: pph = bruto × tarif atau × 1,2), sisanya
+(THR lama, Desember lama) "tidak tercatat" dengan kalimat yang hanya menyebut apa yang AKAN
+dilakukan payroll hari ini. Per baris: `tax_id_treatment` (kalimat), `tax_id_treated_as_identified`
+(true/false/null), `tax_id_treatment_source` (`snapshot`/`inferred`/`partial`/`current`),
+`tax_id_treatment_label` (kolom CSV terakhir `perlakuan_identitas` — R2-rekap-5; kosong HANYA bila
+dikenali DAN tercatat/disimpulkan tarif normal — R3-rekap-1); baris yang KINI dikenali tetapi slipnya
+120 % mendapat kalimatnya sendiri; slip satu masa dengan perlakuan berbeda atau sebagian tanpa flag
+disebut PER RUN ('berbeda antar slip' / 'sebagian tidak tercatat' — R3-rekap-4); pegawai terhapus keras:
+CSV `#<id>` + "Data pegawai tidak ditemukan", tanpa ramalan (R3-rekap-6). Ubin "Pegawai tanpa identitas
+pajak" membaca `summary.without_tax_id_normal_rate` (hanya yang pasti) DAN
+`summary.identified_but_surcharged` di delta-nya (R3-rekap-5). Kalimat digambar DI BAWAH NAMA pegawai
+(`span.cell-sub.tax-id-treatment`, lebar minimum 16rem — di ponsel kolom pertama menciut ke 91 px,
+R2-rekap-3); sel identitas dan jenis TETAP kosong (S38 memaku). Rekap tidak menghitung ulang apa
+pun; mengubah definisi identitas payroll mengubah pemotongan = keputusan pemilik (LAPORAN P-3b §9-I).
+`GET hr/pph21-recap` di balik `hr.view` (data pribadi — gerbang yang sama dengan register
+sertifikat/cuti/absensi), jalur sendiri agar tidak ditelan `{payrollRun}`. CSV `;` + desimal
+koma, baris pertama `# Rekap internal … BUKAN berkas impor DJP`. Muatan membawa entri
+registri `ebupot_2126_bulanan` dan `Pph21TerService::VERIFICATION_NOTE` ("tabel TER … perlu
+dicek terhadap peraturan yang berlaku") — tabel TER hidup di `Pph21TerService`, BUKAN di
+`config/erp.php`, dan angkanya tidak diubah paket ini. NTPN tetap manual (Kalender Pajak).
+
+## 40. Preset impor per rekening dan folder terpantau rekening koran (P-3c)
+
+**Preset adalah pilihan eksplisit, bukan sniffing.** `fin_bank_accounts.import_preset`
+(JSON nullable, migrasi 001502; bentuk di `Modules\Finance\Support\ImportPreset`): `name`,
+`format` (`csv` saja — MT940 tidak butuh preset dan `savePreset` menolaknya), `mapping` =
+kunci kolom `ImportPreset::MAPPING_KEYS` **tanpa** `period_*`/`opening_*`/`closing_*`
+(`PER_FILE_KEYS`, milik tiap berkas), `expected_header` = sel baris fisik ke-`skip_rows`
+pada kolom yang DIPETAKAN saja (`mappedColumns`), `header_note` bila tanpa baris judul,
+`saved_at`, `saved_by`. **Satu preset per rekening** (menyimpan lagi menimpa) — keputusan
+LAPORAN P-3c §2. Disimpan HANYA lewat `BankStatementImportService::savePreset` dari
+pemetaan yang **parse-nya jalan DAN tie-out nol** atas berkas yang dikirim (penghalang
+rantai/identitas sengaja tidak ikut); pintu `PUT/DELETE finance/bank-accounts/{id}/import-preset`
+= `fin.update`. Diterapkan HANYA bila `use_preset: true` (`BankStatementParseRequest`:
+kolom tidak wajib, periode/saldo tetap wajib) lewat **satu jalur**
+`BankStatementImportService::resolveMapping(account, format, content, perFile, usePreset)` —
+dipakai controller (preview/store) DAN `BankInboxService`; tidak ada jalur kedua. Header
+pada kolom yang dipetakan ≠ `expected_header` → `LogicException` yang menyebut kolomnya
+(`ImportPreset::headerMismatches`: "Kolom 4 pada preset «BCA KlikBCA» diharapkan 'Debit',
+berkas berisi 'Mutasi'." — nomor 1-based = label layar, SEMUA kolom yang bergeser disebut),
+sebelum satu baris pun diparse. Preset **tidak pernah melonggarkan** tie-out/rantai/
+identitas (dipaku `BankImportPresetTest`). Layar: pemilih "Pemetaan kolom" hanya bila
+rekening punya preset; tombol simpan hanya di kartu pratinjau yang `can_import`; muatan
+pratinjau membawa `preset: {used, name}` dari controller, bukan disimpulkan SPA.
+
+**Registri preset bawaan per bank** `Modules\Finance\Support\BankPresets` (pola
+`DjpFormats` §39): PERSIS empat kunci `bca|mandiri|bni|bri`; `verified_against` = berkas
+ekspor NYATA pemilik di `docs/samples/bank/<bank>-<kanal>-<YYYY-MM-DD>.<ekstensi>` + tanggal +
+siapa, atau null = "BELUM ADA BERKAS EKSPOR NYATA"; `mapping` hanya ikut bila berkasnya ADA di
+pohon DAN jalurnya lolos `BankPresets::evidencePath()` (di bawah `docs/samples/bank/`, nama
+`<kunci>-<kanal>-<YYYY-MM-DD>.<ekstensi>`, tanggal `YYYY-MM-DD`) — contoh demo `docs/samples/*`
+atau `README.md` yang ditunjuk sebagai bukti diturunkan sambil menyebut jalurnya (`describe()`
+murni menurunkan klaim tanpa berkas/tanpa pola DAN menahan pemetaannya; V-preset-1);
+`selectable` = terverifikasi DAN punya pemetaan. Hari ini folder itu hanya berisi README
+(dipaku) → keempatnya tidak bisa dipilih. Kalimatnya sampai ke `GET finance/bank-statements/presets`
+(`data.presets` + `summary`), kartu `.bank-preset` di tab Impor (`badge_label`/`verification`/
+`awaiting_file`/`demo_note` apa adanya; `bankrecon.js` tidak boleh memuat literal
+«diverifikasi»/«ekspor nyata»), dan README (menyebut setiap kunci + `sample_stem`, TANPA nama
+kolom bank sebagai fakta — dipaku `BankPresetsTest`). Dua contoh demo di `docs/samples/`
+disebut sebagai contoh demo (`demo_note`), tidak dinaikkan menjadi preset.
+
+**Folder terpantau: satu-satunya permukaan disk, dan aplikasi HANYA membacanya.**
+`config('erp.bank_inbox.path')` (env `BANK_INBOX_PATH`; **kosong = bawaan
+`BankInboxService::DEFAULT_PATH` yang diselesaikan DI SERVICE** — `config/erp.php` harus bisa
+di-`require` tanpa aplikasi yang di-boot, karena penyedia data statis
+`DocumentFormatValidationTest::shippedDocumentFormats()` me-require-nya apa adanya; satu
+`storage_path()`/`base_path()` sebagai nilai bawaan di berkas itu memanggil
+`Container::getInstance()->storagePath()` pada Container telanjang dan menjatuhkan SELURUH suite di
+kedua driver — terukur di gerbang P-3c, tidak terlihat gerbang per-direktori; dipaku
+`BankInboxTest::test_the_erp_config_can_be_required_without_a_booted_application`. Bawaannya
+`storage/app/private/bank-inbox` — dikecualikan `rsync --delete`, ikut cadangan), sub-folder per KODE rekening aktif
+(`BankAccount::CODE_PATTERN` — SATU pola untuk Request kode rekening, pemindai, dan kartu
+Kesiapan; `realpath` di bawah root; symlink keluar → `ignored` TANPA menyentuh target — tidak
+dibaca, tidak dihash, tidak di-stat; SUB-FOLDER yang berupa symlink tidak diikuti sampai ke
+daftar isinya — satu baris `ignored` untuk tautannya, bukan satu baris per berkas di folder
+tujuan, yang sebelumnya memulangkan daftar direktori asing lewat API; tersembunyi/bersarang
+dilewati; berkas di akar dan sub-folder yang namanya tidak memenuhi pola → `ignored` dengan
+kalimat, bukan dilewati bisu). **Direktori yang tidak bisa dibaca ≠ direktori kosong**:
+`BankInboxService::entries()` memulangkan `false` (bukan `[]`) saat `scandir` gagal — akar yang
+tidak terbaca → `folder_readable: false` + `FOLDER_UNREADABLE_NOTE` di layar dan keluaran
+perintah (tanpa baris ledger: tidak satu berkas pun terlihat), satu SUB-FOLDER yang tidak
+terbaca → satu baris `failed` atas sub-foldernya + satu notifikasi + kartu Kesiapan
+(`subfolder.readable`), sub-folder lain tetap diperiksa. Suite berjalan sebagai root (menembus
+`chmod 000`), jadi cabang itu diuji lewat seam `protected entries()`.
+Tidak ada `fopen` mode tulis, `rename`, `unlink`, `mkdir` terhadap folder itu — `BankInboxTest`
+memotret nama/ukuran/inode/mtime sebelum = sesudah. Yang ditulis: ledger `fin_bank_inbox_files`
+(migrasi 001503; unik `(relative_path, sha256)` — sha256 isi untuk berkas yang dibaca,
+`BankInboxService::pathKey(jenis, jalur)` untuk berkas yang ditolak SEBELUM dibaca: symlink,
+sub-folder asing, > 2 MB, hak akses — ukuran diperiksa sebelum satu byte pun dibaca, berkas
+sebesar apa pun tidak masuk memori; status `imported|failed|duplicate|ignored|superseded`;
+`statement_deleted` hanya di muatan API untuk `imported`/`duplicate` yang rekening korannya sudah
+dihapus; `error` kalimat Indonesia; tanpa FK) dan stempel `core_settings` `bank_inbox.checked_at`
+(`SettingService::INTERNAL_KEYS` — Core hanya mendaftarkan kuncinya). Idempoten: nama+kunci sama
+→ `unchanged` bila rekening korannya masih ada (dihapus → berkas baru lagi); `content_hash`
+service sudah ada → `duplicate` dengan kalimat yang menyebut kanal dari FAKTANYA (baris ledger
+`imported` lain → "Isi berkas sama dengan <jalur>"; `imported_by` null tanpa baris → tanpa klaim
+kanal; `imported_by` terisi → "(lewat layar Impor)"); isi berubah → baris baru dan baris lama
+`failed|ignored|duplicate` jalur itu → `superseded`; `failed`/`ignored` diperiksa ulang tiap jam.
+Balapan: `Cache::lock('fin:bank-inbox', 900)` di `scan()` (yang kedua pulang `locked`, tanpa
+tulisan, `LOCKED_NOTE`) + jadwal `withoutOverlapping()`; `record()` tidak pernah menurunkan baris
+`imported`/`duplicate` yang rekening korannya ada, dan `UniqueConstraintViolation` dibaca ulang;
+"Berkas ini sudah diimpor…" dari `import()` → `duplicate`, bukan `failed`. `status()['counts']` =
+baris dengan `checked_at` = stempel terakhir (ubin pemeriksaan terakhir), `files` = sejarah.
+Impor lewat `BankStatementImportService` yang sama (preview → blockers → import transaksional;
+`imported_by` null; `unattended: true` mengganti kalimat salah-rekening "yang Anda pilih" dengan
+"berada di sub-folder …; letakkan di sub-folder kode rekening yang benar"). CSV: preset WAJIB dan
+WAJIB memetakan kolom saldo; periode/saldo dari `CsvStatementParser::deriveEndpoints`
+(saldo awal = saldo baris mutasi pertama − mutasi pertama, saldo akhir = saldo baris
+terakhir, periode = min/max tanggal; `dd/mm` tanpa tahun → gagal dengan kalimat) — tie-out
+yang menyusul adalah aritmetika berkas sendiri. Batas 2 MB = `BankStatementParseRequest`;
+bukan UTF-8 → latin1; ekstensi selain `csv|txt|sta|940|mt940` → `failed`; `Throwable` lain →
+`failed` + log, berkas lain tetap diproses. **Notifikasi**: `failed` →
+`NotificationService::system('fin.update', FAILED_TITLE, "Berkas <relatif> untuk rekening
+<kode nama>: <sebab>", '/bank-recon?tab=inbox', 7, signature, null)` — signature = **40 karakter
+pertama sha256** (`BankInboxService::signature`; `core_notifications.document_code` varchar(40) — sha256 utuh
+lolos di SQLite, ditolak MySQL dan ditelan `guard()`: nol notifikasi tanpa galat) — sekali per berkas
+(dedupe judul+signature), bukan tiap jam (dipaku 3 jam berturut); dua berkas tak terbaca = dua
+signature (kunci jalur), bukan satu sha256 string kosong; `imported` → satu
+notifikasi ringkas bertautan `/bank-recon?tab=statements&account=…&statement=…`; template
+`null` = generik, sengaja; tidak ada jalur absolut di ledger/API/notifikasi (dipaku).
+**Layar bertab dan tautan dalam**: tab yang berganti di dalam `bankrecon.js` ditulis kembali ke
+hash lewat `router.replacePath()` (tanpa `hashchange`), dan `notifications.js` memanggil
+`router.resolve()` bila hash tujuan sudah sama — kalau tidak, "Buka dokumen" ke `?tab=inbox`
+sesudah pemakai berpindah tab tampak mati (V-permukaan-2).
+`fin:bank-inbox` `hourly()` di `FinanceServiceProvider` (dipaku lewat `schedule:list` +
+regex ekspresi cron — kolomnya dirapikan); folder belum ada → kalimat, keluar 0, tanpa
+ledger, tanpa notifikasi, stempel tetap ditulis. `GET finance/bank-inbox` (`fin.view`) →
+`folder{exists, configured_via, is_default, layout, note}`, `last_checked_at`, `counts`,
+`accounts[].preset{name, auto_csv, note}`, `files[]`; `POST finance/bank-inbox/run`
+(`fin.create` = izin impor). Layar: tab `inbox` "Folder terpantau" — kalimat folder-belum-ada,
+label status, dan kalimat kesiapan preset dari server; tautan dalam `#/bank-recon?tab=…&account=…&statement=…`
+dibaca dari hash. **Tidak ada klaim "penjadwal aktif"** di SPA: hidup-matinya penjadwal milik
+`core/health`. **Sapuan frasa janji** («otomatis dari bank», «langsung dari bank», «terhubung ke
+bank», «penjadwal aktif/berjalan», «diambil dari bank») dipaku TERBATAS pada berkas paket ini
+(`BankInboxTest`), tak peka huruf besar, negasi wajar dan guillemet dikecualikan. SFTP dan
+host-to-host: `docs/KEPUTUSAN-INTEGRASI.md` §10; runbook folder: PANDUAN-ADMINISTRATOR §5.13.
+
+## 41. Token API, ability, dan webhook keluar (P-3d)
+
+**Ability token ditegakkan di SATU tempat: `App\Models\User::hasPermissionTo()`.**
+Setiap pemeriksaan izin di aplikasi ini bermuara di sana — middleware rute spatie
+(`canAny`), `Gate::before` yang didaftarkan spatie (`checkPermissionTo`),
+`$request->user()->can()` di dalam controller, `hasAnyPermission()` di dalam
+service. `Modules\Core\Support\TokenScope` menyempitkannya SESUDAH versi spatie
+memulangkan true, jadi ia hanya pernah MENGURANGI: izin yang dicabut dari peran
+mencabut aksesnya token pada permintaan berikutnya juga. `Gate::before` **tidak
+dipakai untuk menolak** — spatie mendaftarkan `before`-nya lewat
+`callAfterResolving(Gate::class)` di dalam `register()`, jadi ia selalu callback
+PERTAMA dan memulangkan `true` untuk izin yang dimiliki pengguna; sebuah `before`
+kedua yang menolak tidak akan pernah dipanggil untuk kasus yang harus ditolaknya.
+Token yang dipakai permintaan diingat dari peristiwa `TokenAuthenticated`
+Sanctum — **satu sumber, dan hanya satu**: `currentAccessToken()` sengaja tidak
+dibaca, karena `Sanctum::actingAs($user)` memasang Mockery dengan daftar ability
+KOSONG dan membacanya mengubah 23 uji `tests/Feature/Core` menjadi 403 atas izin
+yang penggunanya pegang penuh. **Satu-satunya jalur pemberian yang tidak lewat
+`hasPermissionTo()` milik pemakainya** adalah `Gate::before` delegasi persetujuan
+(F-1), dan ia memanggil `TokenScope::allows()` sendiri; menambah jalur pemberian
+ketiga berarti menambah panggilan itu. `['*']` (cangkang SPA dan setiap baris
+sebelum P-3d) tidak pernah dipersempit. 403-nya diterjemahkan
+`Modules\Core\Http\Middleware\ExplainTokenScopeRefusal`, didorong ke grup `api`
+lewat `pushMiddlewareToGroup` (bukan `bootstrap/app.php`). Ia menukar BADAN
+jawaban 403 — dan `Illuminate\Routing\Pipeline` sudah merender pengecualian
+`UnauthorizedException` menjadi jawaban sebelum middleware grup melihatnya, jadi
+cabang jawaban itulah yang berjalan untuk 403 dari middleware rute MAUPUN dari
+dalam controller; cabang `catch`-nya lapis kedua untuk penangan pengecualian yang
+melempar ulang (`withoutExceptionHandling()`). **403 punya DUA bentuk badan**:
+ability token yang kurang → kalimat Indonesia + `errors.token_abilities`; izin
+PENGGUNA yang kurang → kalimat bawaan spatie tanpa `errors`. Keduanya dituliskan
+apa adanya di `docs/api/openapi.json`.
+
+**Batasnya dikatakan, bukan disembunyikan.** Ability menyempitkan gerbang izin
+dan tidak menciptakan gerbang di tempat aplikasi ini tidak menggerbangi apa pun.
+`UngatedApiRouteCensusTest` memaku daftar LITERAL **31** rute TULIS tanpa gerbang
+izin — dan HANYA itu. Hitungan seluruh aplikasi (diukur 12 Sep 2026: **862** rute
+api, **644** dijaga izin, **218** tidak, **646** kemunculan middleware — dua rute
+SPK membawa dua) sengaja TIDAK dipaku: sebuah rute baru yang wajar dan bergerbang
+di modul mana pun akan memerahkan gerbang paket ini tanpa sebab, dan paku yang
+merah tanpa sebab akan dimatikan orang (pelajaran 4). Setiap baris daftar itu
+harus self-service, memeriksa izin di dalam controllernya, atau dijaga
+`Modules\Iam\Http\Middleware\SessionOnly`. Tiga pintu memakai yang terakhir
+(`me/api-tokens`, `me/password`, `me/phone`): sebuah token yang bisa mencetak
+token berikutnya adalah token tanpa batas.
+
+**Kedaluwarsa punya DUA kunci, dan yang global membunuh yang per-token.**
+`Sanctum\Guard::isValidAccessToken()` menuntut plafon `config('sanctum.expiration')`
+(720 menit) DAN `expires_at` baris. `Sanctum::authenticateAccessTokensUsing()` di
+`IamServiceProvider` memakai plafon itu HANYA pada token sesi SPA
+(`personal_access_tokens.kind` = `session` **atau NULL** — setiap baris sebelum
+P-3d) dan menilai token `personal` dari `expires_at`-nya sendiri; token personal
+tanpa `expires_at` ditolak. `config/sanctum.php` tidak disentuh, jadi tidak ada
+baris produksi yang menjadi abadi dan tidak ada backfill. Batas ≤ 365 hari
+ditegakkan di `ApiTokenStoreRequest` sebagai JUMLAH HARI, bukan tanggal.
+`Modules\Iam\Models\ApiToken` menuruni `PersonalAccessToken` Sanctum (penyimpangan
+§1 yang disengaja: Guard hanya memakai model itu) dan **harus** menuliskan
+`$table` sendiri.
+
+**Dua ember laju** (ledger §5 baris 10): `Modules\Iam\Support\IntegrationRate` —
+token pribadi 300/menit per TOKEN, sisanya 120/menit dengan kunci lama. Ia
+menyelesaikan tokennya sendiri karena pembatas laju berjalan sebelum
+`auth:sanctum`. **CORS tetap kosong** (`docs/KEPUTUSAN-INTEGRASI.md` §11).
+
+**Webhook keluar: tanda tangan atas BYTE YANG DIKIRIM.** `WebhookPayload::encode()`
+adalah satu-satunya tempat muatan menjadi string; string itu ditandatangani
+(`WebhookSignature`: `t=<unix>,v1=hmac_sha256("<t>.<badan>", rahasia)`, stempel
+waktu IKUT ditandatangani, jendela 300 detik, `hash_equals`), string itu dikirim
+(`Http::withBody`, bukan `->post($url, $array)` yang meng-encode ulang), dan
+string itu disimpan di kolom `payload`. **Tanda tangannya dihitung sekali per
+PERCOBAAN**, di `DeliverWebhook` tepat sebelum POST-nya — stempel waktu ikut
+ditandatangani, dan percobaan kelima berangkat 4.860 detik sesudah barisnya lahir,
+jauh di luar jendela 300 detik yang dokumen kita suruh penerima tegakkan; kolom
+`signature` karena itu adalah CATATAN percobaan terakhir, bukan janji. Yang
+dibekukan hanyalah `payload`. `X-Nusantara-Event` stabil di kelima percobaan DAN
+sama untuk semua langganan pada transisi yang sama. **Rahasianya dipakai APA
+ADANYA** sebagai kunci HMAC (64 karakter hex, bukan 32 byte yang di-decode) —
+dikatakan di `WebhookSignature::SECRET_FORM` dan dari sana ke layar, PANDUAN
+§5.14 dan openapi.json, karena penerima yang menebak salah gagal pada SETIAP
+kiriman tanpa satu pun petunjuk. Muatan **kurus
+dengan sengaja** — penunjuk, bukan salinan dokumen; penerima yang butuh detail
+memanggil balik API dengan tokennya sendiri, tempat ability-nya berlaku.
+`version` naik hanya bila arti sebuah kolom berubah.
+
+**Dua lapis menunggu commit.** `DispatchDocumentWebhooks` adalah
+`ShouldHandleEventsAfterCommit` dan `DeliverWebhook` adalah
+`ShouldQueueAfterCommit` (tries 5, backoff 60/300/900/3600 — pola rumah
+`DeliverNotification`). `DocumentTransitioned` dipancarkan dari DALAM transaksi
+bisnis, dan sebuah POST tidak bisa ditarik kembali. Listener tidak pernah
+menjatuhkan persetujuannya: `WebhookService::dispatchFor` menelan Throwable ke
+log. `sent` **hanya** pada 2xx. Langganan yang gagal 20 kali beruntun
+dinonaktifkan otomatis DAN mengatakannya (kalimat di layar + notifikasi
+`core.update` + tombol Aktifkan lagi). Rahasia langganan terenkripsi, `$hidden`,
+tampil SEKALI. SSRF: `WebhookUrl` (https wajib, alamat internal ditolak saat
+MENYIMPAN dan saat MENGIRIM, redirect tidak diikuti, penyelesai DNS adalah seam
+supaya uji tidak menyentuh jaringan). **Alamatnya DINORMALKAN sebelum dinilai**:
+`FILTER_FLAG_NO_PRIV_RANGE|NO_RES_RANGE` milik PHP tidak menutup `::ffff:0:0/96`,
+jadi `::ffff:127.0.0.1` memulangkan "publik", dan `filter_var` tidak mengenali
+bentuk `inet_aton` (`2130706433`, `0177.0.0.1`, `127.1`) sebagai IP sama sekali.
+Kolom `error` melewati `ProviderErrorScrubber` **dengan rahasia langganan sebagai
+rahasia yang dikenal**, dan penyaring itu memaksa keluarannya UTF-8 sah — badan
+jawaban yang bukan teks menjatuhkan penulisan barisnya di MySQL (1366) dan
+menggantikan sebab pengiriman dengan galat SQL yang menyebut soket dan nama basis
+data.
+
+**OpenAPI dipelihara tangan**: `docs/api/openapi.json` (JSON, bukan YAML — tidak
+ada parser YAML di pohon ini dan menambahkannya melanggar aturan dependensi),
+DUA PULUH endpoint terpakai, dengan `x-izin` per operasi. `OpenApiDriftTest`
+membandingkan terhadap `Route::getRoutes()` pada jalur, metode, izin, **dan
+`auth:sanctum`** — DIBATASI pada kedua puluh itu, supaya endpoint baru sebuah
+modul lain tidak memerahkannya tanpa sebab. Arah keempat membaca
+`excludedMiddleware()` juga: `->withoutMiddleware('auth:sanctum')` TIDAK
+mengeluarkan middlewarenya dari `gatherMiddleware()`, jadi syarat yang hanya
+membaca yang pertama meloloskan satu baris yang membuka endpoint bagi siapa pun.
+Menambah endpoint ke dokumen = menambah `x-izin`-nya, `requestBody`-nya bila ia
+TULIS, dan parameter halaman bila jawabannya `AmplopDaftar`.
+
+## 42. Web push — satu baris per PERANGKAT, dan pengenal yang tidak dikarang (P-3e)
+
+**Web Push STANDAR, bukan FCM.** RFC 8030/8291/8292 lewat `minishlink/web-push` (kripto
+aes128gcm tidak ditulis sendiri). **Tidak ada SDK Firebase, tidak ada akun Google, tidak ada
+aplikasi native.** Endpoint `fcm.googleapis.com` yang muncul di `core_push_subscriptions` adalah
+**pilihan Chrome**, bukan integrasi kita: Firefox memberi alamat Mozilla dan Safari alamat Apple,
+dan tidak satu baris kode pun berubah.
+
+**`core_push_subscriptions` (migrasi 001804).** `endpoint` disimpan **UTUH** di kolom `text` dan
+**TIDAK PERNAH diindeks**: endpoint yang NYATA diukur **188 karakter** (13 Sep 2026) dan
+spesifikasinya tidak menjanjikan batas apa pun, sementara `varchar(190)` utf8mb4 = 760 byte adalah
+batas indeks InnoDB. Identitasnya dibawa `endpoint_hash` = **sha256 heksadesimal, 64 karakter,
+unik** — karena itu peramban yang berlangganan ulang **memperbarui** barisnya, bukan menumpuk.
+`p256dh` dan `auth` milik peramban apa adanya; **tidak ada satu pun rahasia KITA di tabel ini**
+(kunci privat VAPID hanya di `.env`). User-Agent **mentah tidak disimpan**: `PushDeviceLabel`
+menurunkan "Chrome di Android" sekali saat mendaftar dan membuang sisanya.
+
+**SATU BARIS KOTAK KELUAR PER LANGGANAN**, bukan per orang — satu-satunya kanal yang ber-fan-out
+(`push_subscription_id`, migrasi 001805). Alasannya: seseorang bisa punya tiga perangkat yang
+menjawab **berbeda** dalam satu pengiriman (201, 410, timeout). Satu baris harus memilih satu
+jawaban dari tiga, satu `provider_id` dari tiga, dan "Kirim ulang" sesudah 1 dari 3 berhasil akan
+mengirim **ulang ke perangkat yang sudah menerima**. Harganya dikatakan apa adanya: barisnya
+berlipat sebanyak perangkat. Kolomnya **tanpa foreign key** dengan sengaja — baris pengiriman
+adalah riwayat dan harus hidup lebih lama daripada perangkatnya.
+
+**PENGENAL YANG TIDAK DIKARANG.** Web push **tidak punya message id** dalam standarnya: RFC 8030 §5
+menjadikan header `Location` **opsional**. Yang ada dipakai apa adanya; yang tidak ada dibiarkan
+**kosong**, dan buktinya adalah `201` dari layanan push itu sendiri. Aturan "tidak ada `sent` tanpa
+pengenal penyedia" (§38) karena itu dilonggarkan **HANYA** untuk kanal yang mengimplementasikan
+`Core\Contracts\ChannelWithoutMessageId`; `MailChannel` dan `WhatsAppChannel` **tidak**
+mengimplementasikannya, dan uji memaku itu sebagai bentuk kelas, bukan sebagai kalimat. Yang
+dilonggarkan hanya "kosong belum tentu gagal"; "gagal berarti gagal" tidak pernah dilonggarkan —
+kanal tetap wajib MELEMPAR.
+
+**Empat sebab baru di `DeliveryGate`**, urutan yang sama dengan kanal lain (paling global →
+paling pribadi): `WEBPUSH_DISABLED` (sakelar Pengaturan) → `WebPushSetup::skipReason()` (VAPID di
+`.env`) → `USER_OFF` → `WEBPUSH_NO_DEVICE`. Dua yang pertama dipisah ke
+`DeliveryGate::webPushServerReason()` karena layar Profil membutuhkannya sendiri: itulah jalan
+buntu yang **tidak bisa** diatasi tindakan apa pun di peramban, jadi tombolnya tidak ditawarkan.
+
+**TUJUH jalan buntu di kartu Profil** (empat sampai putaran verifikasi P-3e, 13 Sep 2026), dalam
+urutan gerbang: sebab server → iOS tanpa Layar Utama → **konteks tidak aman** → tanpa Push API →
+**worker belum terdaftar** → izin ditolak → **kanal dimatikan pengguna**. Ketiga yang baru masing-
+masing menutup sebuah tombol mati tanpa kalimat: halaman tanpa TLS membuat `'serviceWorker' in
+navigator` bernilai false dan kalimat "peramban tidak mendukung" menyalahkan peramban yang sehat;
+tanpa registrasi worker, `navigator.serviceWorker.ready` **tidak pernah selesai** dan `finally`
+`withBusy()` tidak pernah berjalan (karena itu ia dibungkus `Promise.race` berkalimat); dan kanal
+yang dimatikan pengguna membuat kartu menjanjikan "pemberitahuan berikutnya akan muncul" untuk
+baris yang kotak keluar akan tulis **Dilewati**. Badan `pushBlocker()` **dibandingkan UTUH** di
+uji — sebuah gerbang yang memilih satu kalimat dari tujuh hanya bisa dipaku sebagai satu kalimat
+penuh.
+
+**ENDPOINT PERANGKAT ADALAH URL MILIK ORANG LAIN, dan ia melewati penjaga §11** (putaran
+verifikasi P-3e). `Core\Support\PushEndpoint` memakai **penilaian `WebhookUrl` apa adanya** —
+bentuk samaran, CGNAT, nama internal, resolver sebagai seam — dan hanya mengganti kalimatnya.
+Diperiksa di **tiga pintu**: pendaftaran, rotasi, dan sekali lagi tepat sebelum mengirim (DNS
+rebinding). **Pengalihan tidak diikuti** (`allow_redirects => false`), dan sebuah 3xx tidak pernah
+`sent` — pustaka ini menandai setiap jawaban yang bukan galat HTTP sebagai sukses, termasuk 3xx.
+**Dua kegagalan penjaga punya umur berbeda**: alamat internal = PERMANEN (`LogicException` →
+`failed` seketika), nama yang tidak bisa diterjemahkan sekarang = SEMENTARA (`RuntimeException` →
+diulang pekerja). Plafon **`PushSubscriptions::MAX_PER_USER` = 10** membatasi fan-out yang bisa
+dipicu pengguna biasa.
+
+**SATU LANGGANAN, SATU PEMILIK — DAN KANAL MEMERIKSANYA.** Langganan push milik PERAMBAN, bukan
+akun: di komputer yang dipakai bergantian, peramban memulangkan endpoint yang SAMA untuk siapa pun
+yang sedang masuk, jadi menekan "Aktifkan" **memindahkan** barisnya (id barisnya tidak berubah).
+Karena itu `WebPushChannel::subscriptionOf()` mencari langganan **di dalam lingkup pemilik baris**,
+dan ketidakcocokan adalah `skipped` — bukan `failed`: tidak ada yang gagal, sasarannya yang
+berpindah. Perpindahan antar-pengguna menulis baris audit. Endpoint **disamarkan** sebelum masuk
+kolom `error` (`ProviderErrorScrubber::webPush($teks, $endpoint)`): ia kapabilitas — `push/rotate`
+memakainya sebagai satu-satunya kredensial — dan kolom itu dibaca setiap pemegang `core.update`.
+
+**404/410 → langganan DIHAPUS, dan kejadiannya dicatat di `core_audit_log`.** Mencatatnya "di baris
+langganan" tidak berarti apa-apa: baris itulah yang dihapus. Log audit append-only dan tidak punya
+jalur hapus di aplikasi ini; ia **tidak punya layar** (PANDUAN-ADMINISTRATOR §3.10) — yang membacanya
+`GET api/core/audit-log`, izin `core.view`. Baris kotak keluarnya
+`failed` seketika (permanen), dan Kirim ulang atasnya **ditolak 422**. **401/403** = kunci VAPID
+ditolak layanan push (termasuk: kunci baru saja diganti) — juga permanen. **429/5xx/jaringan** =
+pengecualian biasa, lima percobaan dengan backoff yang sudah ada.
+
+**Muatan dipotong 2.820 byte**, bukan 4.078 (batas keras pustaka). Di bawah angka itu — panjang
+padding otomatis pustaka — **setiap badan permintaan keluar dengan panjang yang sama persis**
+(diukur 2.922 byte, apa pun isinya), dan panjang badan adalah satu-satunya hal tentang isi pesan
+yang bisa dibaca layanan push. Muatannya `{judul, isi, tautan, tag}`; `tag` = id notifikasi, jadi
+pemberitahuan yang sama yang sampai dua kali **menimpa** alih-alih menumpuk.
+
+**Jahitan uji ada TEPAT SATU: `Core\Support\WebPushSender::$clientOptions`.** `Minishlink\WebPush\
+WebPush` **membuat klien Guzzle-nya sendiri** di konstruktor, jadi `Http::fake()` dan
+`Http::preventStrayRequests()` **TIDAK menutupinya** — diukur 13 Sep 2026: uji yang lupa memasang
+handler benar-benar menghubungi layanan push dari mesin uji. Satu-satunya lubang adalah argumen
+KEEMPAT konstruktornya (`clientOptions`), dan uji memasang
+`['handler' => HandlerStack::create(new MockHandler([...]))]` di sana
+(`Tests\Support\FakeWebPushSender`). Yang tetap dijalankan adalah kode sungguhan sampai ke soket:
+enkripsi, penandatanganan, pembentukan permintaan — jadi **kunci langganan di uji harus kunci
+P-256 yang SAH**. `VAPID::getVapidHeaders()` menuntut kunci MENTAH dan melempar untuk bentuk
+base64url; yang dipakai adalah kelas `WebPush` (lewat `VAPID::validate`). `ContentEncoding` adalah
+**enum PHP** di v10, bukan string, dan `aes128gcm` **disebut** — bawaan pustaka masih `aesgcm`.
+
+**Rotasi `pushsubscriptionchange` lewat rute PUBLIK `POST push/rotate`**, bukan `api/`. Bukan
+kenyamanan: service worker **tidak bisa membaca token sesi** (ia di `localStorage`, yang tidak
+punya API di sana), peristiwanya menyala **ketika tidak ada satu tab pun terbuka**, dan §21 memaku
+bahwa kode `sw.js` tidak menyebut `/api` sama sekali. Kapabilitasnya adalah **endpoint lama**;
+**lima batas** menjaganya — rutenya **tidak pernah MEMBUAT** baris (endpoint lama yang tidak dikenal
+dijawab tanpa menulis), asal endpoint baru harus **sama** dengan yang lama, ia **tidak pernah
+menyentuh baris milik akun lain** (putaran verifikasi: tanpa batas ini satu POST tanpa sesi
+menghapus langganan korban), alamatnya bukan alamat internal, dan lajunya dibatasi.
+
+**Yang boleh diklaim tentang privasinya, dan hanya itu:** isi pesan dienkripsi ujung-ke-ujung
+dengan kunci milik peramban penerima, jadi layanan push **tidak bisa membacanya**. Yang TETAP
+dilihatnya: **bahwa ada pesan, kapan, dan untuk endpoint mana**. Uji kabel SPA memaku daftar frasa
+yang tidak boleh muncul di layar ("tidak ada yang tahu", "sepenuhnya pribadi", …).
+
+## 43. Timesheet & lembur dari absensi — kebijakan sebagai setelan, dan empat keadaan hari (F-5)
+
+**Penundaan F-5 dicabut pemilik 14 September 2026, dan sebabnya dihapus, bukan diabaikan.** Baris
+roadmap berbunyi "DITUNDA sampai ≥ 1 bulan data F-4 — tanpa itu aturan pembulatan lembur
+**dikarang**". Aturan itu tidak lagi dikarang karena **pemilik menyebutkannya**: bulat ke 15 menit
+terdekat, lembur minimum 30 menit, toleransi terlambat 10 menit, jam kerja normal 8 jam, tarif
+Kepmenaker 102/2004 (1,5x jam pertama, 2x jam berikutnya).
+
+**Kebijakan itu hidup di `config/erp.php` → `hr.timesheet.*` dan di registri Pengaturan grup
+`hr`** — sepuluh kunci, bukan satu konstanta di kelas layanan. **DUA** di antaranya adalah angka
+yang pemilik TIDAK sebut dan yang tanpanya sisanya tidak punya arti:
+
+- `day_start` (bawaan `08:00`) — tanpanya toleransi terlambat tidak punya acuan. Ia bertipe
+  **`time`**, tipe registri baru yang divalidasi `date_format:H:i`, **bukan `regex`**: satu-satunya
+  pemakai `regex` di registri adalah `document_format`, dan kalimat galatnya menyuruh orang
+  menyisipkan `{N4}` ke dalam sebuah jam.
+- `break_minutes` (bawaan `60`) — **istirahat tidak termasuk jam kerja** (UU 13/2003 Pasal 79),
+  jadi hari kerja delapan jam berlangsung sembilan jam di jam dinding. Ditambahkan pada putaran
+  verifikasi, dan sebabnya ada di bawah.
+
+Keduanya adalah keputusan pemilik yang masih terbuka (LAPORAN-PAKET-HM-F-5 §9).
+
+**RENTANG BUKAN JAM KERJA.** `worked_minutes` adalah rentang mentah masuk→pulang; yang menjadi
+calon lembur adalah `net_worked_minutes` = rentang dikurangi `break_minutes`. Tanpa potongan itu,
+hari kerja **08:00–17:00** — bentuk hari kerja yang paling biasa yang ada — menghasilkan **satu jam
+lembur setiap hari untuk setiap orang**, di bawah batas 3 jam/hari (jadi tidak ditandai) dan
+sebesar angka yang orang percaya masuk akal (jadi tidak dicurigai). Dua puluh enam hari kerja
+menjadi 26 jam lembur karangan, yang disodorkan Usulan Rekap ke formulir rekap dan dari sana
+menjadi uang. Potongannya **bertahap**, `min(istirahat, rentang − 4 jam)`: memotong 60 menit penuh
+begitu rentang melewati 4 jam membuat orang yang pulang 12:01 terbaca bekerja lebih sedikit
+daripada yang pulang 12:00. Hari membawa **ketiga** angkanya (rentang, istirahat, jam kerja), dan
+kartu kebijakan di layar mencetak kalimatnya — potongan yang tidak disebutkan adalah potongan yang
+tidak bisa diperiksa siapa pun.
+
+**Kalimat pembuka grup `hr` diubah dengan sengaja.** "TIDAK satu pun dari nilai di sini yang
+langsung menggerakkan payroll" benar sampai 13 Sep dan **bohong** sejak 14 Sep. Yang
+menggantikannya adalah **pembedaan**: cuti dan radius geofence tidak menyentuh rupiah, aturan
+timesheet menyentuhnya. Perubahan setiap kunci tercatat di Log Audit (`core_settings` sudah
+diamati `AuditedModels`).
+
+**EMPAT KEADAAN SATU HARI (`TimesheetDayState`), dan tidak satu pun boleh runtuh menjadi "0 jam".**
+`terukur` (dua cap jam, pulang sesudah masuk) · `setengah_terukur` (satu cap jam — "lupa absen
+pulang", dan sepasang stempel yang tidak membentuk rentang) · `tidak_tercatat` (hari kerja tanpa
+cap jam; baris kerani "hadir" tanpa jam ikut ke sini, keterangannya dibawa terpisah di
+`attendance_status`) · `non_kerja` (pola pekan `hr.leave.workweek_days`). Hanya `terukur` yang
+boleh membawa angka jam; ketiga lainnya memulangkan **NULL, bukan 0**. Sebaliknya, hari yang diukur
+penuh dan tidak berlembur memulangkan **0 yang sungguhan** — bedanya dijaga oleh KEADAAN harinya,
+bukan oleh angkanya. Keterlambatan hanya menuntut cap MASUK, jadi ia tetap terukur pada hari
+setengah terukur.
+
+**PEMBULATAN DILAKUKAN SEKALI**, di `TimesheetService::overtimeMinutes()`, pada **kelebihan menit
+di atas jam normal** — bukan pada rentang kerjanya, dan bukan dua kali. Yang membuat kalimat itu
+benar adalah satu aturan yang dipaku: **MENIT ADALAH SUMBERNYA, JAM HANYA TAMPILANNYA.**
+`measuredOvertimeShape()` membawa `total_minutes` dan `days[].minutes` (bilangan bulat, tepat) di
+samping jam yang dibulatkan, dan **setiap perhitungan uang wajib memakai menit**. Sampai putaran
+verifikasi, pembelahan tarif menjumlahkan `hours` yang sudah dibulatkan satu-satu sementara gerbang
+kesamaan totalnya dibandingkan terhadap total yang dihitung dari menit — dua angka berbeda untuk
+satu jumlah jam, **pada slip yang sama**. Pada pembulatan bawaan 15 menit keduanya kebetulan sama
+(seperempat jam desimalnya tepat), jadi tidak satu uji pun bisa melihatnya; pada 10 menit ia
+membayar Rp 953,76 LEBIH dan pada 20 menit Rp 953,75 KURANG. Urutannya: jam normal →
+**pembulatan ke kelipatan TERDEKAT** (ke atas maupun ke bawah; pembulatan yang selalu ke bawah
+adalah potongan upah yang menyamar sebagai aritmetika) → minimum. Tepi-tepinya pada bawaan:
+`+7 → 0`, `+8 → 15 → gugur minimum → 0`, `+22 → 15 → 0`, `+29 → 30`, `+30 → 30`.
+
+**Batas Kepmenaker DICATAT DAN DITANDAI, TIDAK DIPOTONG** (3 jam/hari, 14 jam/pekan Senin–Minggu).
+Pola yang sama dengan geofence F-4: memotong diam-diam membuat layar mengatakan angka yang berbeda
+dari yang benar-benar dikerjakan orangnya.
+
+**Tarif hari libur TIDAK dibangun, dan itu DIKATAKAN.** Kepmenaker 102/2004 Pasal 11 ayat 2 memberi
+hari istirahat skala 2x/3x/4x **sejak jam pertama**. Karena itu hari non-kerja yang ada cap jamnya
+**tetap diukur dan dilaporkan terpisah** (`non_working_measured_minutes`) tetapi **tidak pernah
+diusulkan sebagai lembur** dan **tidak pernah masuk ke rincian bayar**. Memakai rumus hari kerja
+untuknya berarti membayar kurang, diam-diam, pada hari yang paling mahal. Sistem ini juga **tidak
+punya kalender hari libur nasional** (`policy.holidays_known = false`), dan layar mencetak itu.
+
+**TIDAK ADA TABEL TURUNAN.** Rincian harian dihitung ulang setiap kali ditanya. Tiga sebab:
+cap jam boleh dikoreksi kapan saja (F-4 justru membangun pintunya, dan migrasi 001091 sudah
+menolak menyimpan `outside_geofence` dengan kalimat yang sama); aturannya **setelan** yang boleh
+berubah, sehingga baris yang ditinggalkan di tabel akan terbaca sebagai hasil aturan hari ini; dan
+yang benar-benar harus beku adalah **uang**, yang dibekukan di tempat payroll sudah membekukan
+`project_id`, `has_tax_id` dan `ter_rate` — **pada slip**.
+
+**UANG: `hr_payslips.overtime_basis` + `overtime_rate_detail` (migrasi 001094).** Tiga aturan yang
+tidak boleh dilanggar:
+
+1. **Total jam SELALU dari rekap bulanan.** Rincian harian menentukan **TARIF**, tidak pernah
+   jumlahnya — ILB tetap otoritatif atas berapa jam yang berhak dibayar. Ini adalah satu-satunya
+   jalur dari `hr_attendances` ke `hr_payslips` yang ada di sistem ini, dan §29 membawa batasnya
+   beserta tiga lapis uji yang memakunya. `PayrollService` menyebut `TimesheetService` **tepat
+   sekali**, lewat `measuredOvertimeShape()` — pintu lain di kelas itu membawa jam kerja dan
+   keterlambatan, bahan yang tidak punya urusan dengan satu rupiah pun.
+2. **Rincian harian dipakai HANYA bila totalnya SAMA PERSIS dengan rekap.** ILB 10 jam melawan
+   absensi 7 jam berarti bentuk harian yang diketahui **bukan** bentuk dari jam yang dibayar;
+   membelah 10 menurut bentuk 7 adalah mengarang hari lembur. Dalam keadaan itu jalur lama
+   (`rata_jam_pertama`) dipakai apa adanya, dan `reason` menyebut **kedua angka**.
+3. **MAJU-SAJA**, dan ia sudah ada: `PayrollService::calculate()` menolak run yang tidak editable,
+   jadi periode approved/closed tidak pernah sampai ke perhitungan ini. **Tidak ada backfill** —
+   `overtime_basis` NULL berarti "slip dihitung sebelum 14 Sep 2026", keadaan yang **berbeda** dari
+   `tanpa_lembur`. Menebak dasar slip yang sudah diposting adalah mengarang bukti tentang uang yang
+   sudah keluar.
+
+**Usulan rekap: `overtime_hours` keluar dari `not_proposed` — DENGAN SYARAT.** Ia diusulkan hanya
+ketika periode punya ≥ 1 hari bercap jam lengkap; bila tidak, ia **tetap** ditolak dengan kalimat
+yang benar SEKARANG ("Belum ada satu hari pun dengan cap jam masuk DAN pulang di periode ini"),
+bukan kalimat lama ("Register mencatat kehadiran, bukan jam lembur yang disetujui") yang berhenti
+benar sejak F-4. Baris seorang pegawai yang tidak punya hari terukur mendapat **NULL**, dan
+formulir rekap **tidak disodori kuncinya sama sekali**: nol yang disodorkan akan disimpan sebagai
+nol yang diputuskan.
+
+**Tiga pintu, dan yang ketiga menjawab 404.** `hr/timesheet/me` tanpa gerbang izin (pola
+`attendances/me`; tidak ada satu parameter pun yang bisa menyebut orang lain) · `hr/timesheet` di
+balik `hr.view` · `hr/timesheet/{id}` **tanpa middleware** karena izinnya bersyarat, menolak dengan
+**404 yang sama persis** untuk "bukan milik Anda" dan "id tidak ada" (pola
+`PushSubscriptionEndpointTest`). 403 memberi tahu pemanggil bahwa id itu **ADA**, dan menyapu
+id 1..N lalu menghitung jumlah karyawan tanpa memegang izin apa pun. Karena itu pengikat model rute
+**tidak dipakai**: 404 bawaannya berbentuk lain.
+
+**Jam ILB dibaca lewat query builder atas nama tabelnya** (`prj_overtime_permits`), bukan lewat
+model `Modules\Projects` — preseden `PayrollService::projectAssignments`. HrPayroll tetap **nol
+impor** dari Projects, dan arah ketergantungan tetap Projects → HrPayroll.

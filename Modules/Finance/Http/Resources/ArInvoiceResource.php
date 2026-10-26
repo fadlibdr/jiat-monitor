@@ -1,0 +1,83 @@
+<?php
+
+namespace Modules\Finance\Http\Resources;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+use Modules\Core\Http\Resources\ApprovalTrail;
+
+class ArInvoiceResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'code' => $this->code,
+            'customer_id' => $this->customer_id,
+            'customer' => $this->whenLoaded('customer', fn () => [
+                'id' => $this->customer->id,
+                'code' => $this->customer->code,
+                'name' => $this->customer->name,
+            ]),
+            'contract_id' => $this->contract_id,
+            'contract' => $this->whenLoaded('contract', fn () => [
+                'id' => $this->contract->id,
+                'code' => $this->contract->code,
+                'title' => $this->contract->title,
+            ]),
+            'termin_id' => $this->termin_id,
+            'termin' => $this->whenLoaded('termin', fn () => $this->termin === null ? null : [
+                'id' => $this->termin->id,
+                'termin_no' => $this->termin->termin_no,
+                'name' => $this->termin->name,
+                'percent' => $this->termin->percent,
+            ]),
+            'project_id' => $this->project_id,
+            // P3 — the opname this claim was assembled from, and the advance flag.
+            'measurement_id' => $this->measurement_id,
+            'measurement' => $this->whenLoaded('measurement', fn () => $this->measurement === null ? null : [
+                'id' => $this->measurement->id,
+                'code' => $this->measurement->code,
+                'period_start' => $this->measurement->period_start?->toDateString(),
+                'period_end' => $this->measurement->period_end?->toDateString(),
+            ]),
+            'is_advance' => (bool) $this->is_advance,
+            'invoice_date' => $this->invoice_date?->toDateString(),
+            'due_date' => $this->due_date?->toDateString(),
+            'description' => $this->description,
+            'dpp' => $this->dpp,
+            'ppn_rate' => $this->ppn_rate,
+            'ppn_amount' => $this->ppn_amount,
+            'retention_withheld' => $this->retention_withheld,
+            'advance_recovery_amount' => $this->advance_recovery_amount,
+            'penalty_amount' => $this->penalty_amount,
+            'penalty_reason' => $this->penalty_reason,
+            'total' => $this->total,
+            'amount_paid' => $this->amount_paid,
+            'outstanding' => $this->resource->outstanding(),
+            'faktur_pajak_no' => $this->faktur_pajak_no,
+            'terbilang' => $this->terbilang,
+            'paid_at' => $this->paid_at?->toDateString(),
+            // T3.7 — surat penagihan: tingkat tertinggi yang sudah diterbitkan,
+            // kapan, dan (satu definisi di ArInvoice::dunningRefusal) tingkat
+            // yang boleh dicetak berikutnya — null bila tidak ada; tombol
+            // "Cetak surat penagihan ke-N" membaca ini, bukan menyalin aturannya.
+            'dunning_level' => (int) $this->dunning_level,
+            'last_dunning_at' => $this->last_dunning_at?->toIso8601String(),
+            'dunning_next_level' => $this->resource->dunningNextLevel(),
+            'status' => $this->status?->value,
+            'status_label' => $this->status?->label(),
+            'cancelled_at' => $this->cancelled_at?->toIso8601String(),
+            'cancellation_reason' => $this->cancellation_reason,
+            'retentions' => ArRetentionResource::collection($this->whenLoaded('retentions')),
+            // Jejak persetujuan, bentuk PaymentResource — satu perender di SPA
+            // (approvalTimeline) untuk semua dokumen; hanya bila show() memuatnya (T3.3).
+            // F-1 — satu perender jejak untuk 25 resource (Core\Http\Resources\
+            // ApprovalTrail), supaya "Budi a.n. Sari" muncul di semuanya dan
+            // bukan di dua puluh empat di antaranya.
+            'approvals' => $this->whenLoaded('approvals', fn (): array => ApprovalTrail::map($this->approvals)),
+            'created_at' => $this->created_at?->toIso8601String(),
+            'updated_at' => $this->updated_at?->toIso8601String(),
+        ];
+    }
+}

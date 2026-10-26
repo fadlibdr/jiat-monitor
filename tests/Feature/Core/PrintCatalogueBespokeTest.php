@@ -1,0 +1,107 @@
+<?php
+
+namespace Tests\Feature\Core;
+
+use App\Models\User;
+use Spatie\Permission\Models\Permission;
+use Tests\ErpTestCase;
+
+/**
+ * Katalog cetak menjawab untuk SEMUA yang bisa dicetak endpoint-nya —
+ * jumlahnya dipaku di ujinya dan naik seiring formulir baru.
+ *
+ * Temuan T3 laporan v2: tujuh formulir rumah proyek hidup di
+ * FormPrintService::FORMS dan dilayani print/forms/{slug}/{id}, tetapi tidak
+ * pernah muncul di GET api/core/print/forms — dapat dicetak, tak dapat
+ * ditemukan oleh klien mana pun yang memercayai katalognya. SPA tidak
+ * menggambar tombol ganda karena printButtonsFor mendedup per slug, dan uji
+ * ini memaku kedua sisi kontrak itu.
+ */
+class PrintCatalogueBespokeTest extends ErpTestCase
+{
+    private const BESPOKE = [
+        'data-proyek', 'laporan-harian', 'laporan-mingguan', 'daftar-temuan',
+        'izin-kerja', 'izin-lembur', 'izin-material',
+        // F-6 — lembar label barcode (F/LBL), bespoke karena ia kisi stiker
+        // dan bukan dokumen bertanda tangan; lihat FormPrintService::FORMS.
+        'label-barcode',
+    ];
+
+    public function test_the_admin_catalogue_lists_every_form_the_endpoint_serves(): void
+    {
+        $rows = $this->actingAs($this->adminUser())
+            ->getJson('api/core/print/forms')
+            ->assertOk()
+            ->json('data');
+
+        // P4 menambah dua entri registri: cv-mandor (F/CVM) + rekap-upah (F/RU).
+        // P5 menambah satu: ppk-alat-jasa (F/PPK). Rekap Tagihan Alat SENGAJA
+        // tidak menambah entri — laporan, bukan lembar tanda tangan.
+        // P6 menambah dua: k3-harian (F/K3H, FM-10-13) + ibprp (F/IBPRP).
+        // P7 menambah tiga: rkk (F/RKK) + daftar-personil (F/SBD) +
+        // dukungan-alat (F/DA). Lembar TKDN SENGAJA tidak menambah entri: ia
+        // adalah formulir Kemenperin, bukan formulir rumah — mencetaknya di kop
+        // empat pihak akan menyamarkan lembar sertifikasi sebagai lembar proyek.
+        // T3.7 menambah tiga: surat-penagihan-1/2/3 (F/SP-1..3) — satu
+        // resource, satu tingkat masing-masing; katalog menyatakan onlyWhen
+        // supaya hanya surat tingkat invoice itu yang digambar (DunningLetterTest).
+        // F-6 menambah satu formulir rumah BESPOKE: label-barcode (F/LBL).
+        $this->assertCount(65, $rows, 'katalog = 57 registri + 8 formulir rumah bespoke');
+
+        $slugs = array_column($rows, 'slug');
+        foreach (self::BESPOKE as $slug) {
+            $this->assertContains($slug, $slugs);
+        }
+    }
+
+    public function test_the_bespoke_rows_carry_the_params_their_screens_need(): void
+    {
+        $rows = collect($this->actingAs($this->adminUser())
+            ->getJson('api/core/print/forms')->json('data'))->keyBy('slug');
+
+        // Laporan harian dicetak per BARIS laporan dengan ?tanggal= darinya.
+        $this->assertSame('projects/daily-reports', $rows['laporan-harian']['resource']);
+        $this->assertSame(['tanggal' => 'report_date'], $rows['laporan-harian']['params']);
+
+        // Detail schedule berjangkar pada project_id baris progres.
+        $this->assertSame('project_id', $rows['laporan-mingguan']['idField']);
+        $this->assertSame(['minggu' => 'week_no'], $rows['laporan-mingguan']['params']);
+
+        // P0-C: ketiga izin berjangkar pada BARIS izinnya sendiri, bukan lagi
+        // pada proyek — resource-nya kunci RESOURCES layar daftar izin.
+        $this->assertSame('projects/work-permits', $rows['izin-kerja']['resource']);
+        $this->assertSame('projects/overtime-permits', $rows['izin-lembur']['resource']);
+        $this->assertSame('projects/gate-passes', $rows['izin-material']['resource']);
+        $this->assertSame('id', $rows['izin-kerja']['idField']);
+    }
+
+    /**
+     * Katalog disaring PER FORMULIR, bukan per pemanggil.
+     *
+     * Sampai F-6 kedelapan formulir bespoke semuanya prj.view, jadi uji ini
+     * hanya bisa membuktikan "pemanggil tanpa prj.view tidak mendapat apa-apa"
+     * — yang juga lulus untuk katalog yang salah menyaring per PEMANGGIL alih-
+     * alih per baris. F/LBL adalah bespoke pertama yang izinnya BUKAN prj.view,
+     * jadi sekarang lengan keduanya bisa ada: pemegang inv.view saja mendapat
+     * TEPAT satu formulir bespoke, dan itu formulir yang izinnya memang ia
+     * pegang.
+     */
+    public function test_the_bespoke_catalogue_is_filtered_per_form_not_per_caller(): void
+    {
+        $user = User::factory()->create();
+        $user->givePermissionTo(Permission::findOrCreate('inv.view', 'web'));
+
+        $slugs = array_column(
+            $this->actingAs($user->refresh())->getJson('api/core/print/forms')->json('data'),
+            'slug',
+        );
+
+        $bespokeSeen = array_values(array_intersect(self::BESPOKE, $slugs));
+
+        $this->assertSame(
+            ['label-barcode'],
+            $bespokeSeen,
+            'Pemegang inv.view saja harus mendapat F/LBL dan tidak satu pun dari tujuh formulir proyek.',
+        );
+    }
+}

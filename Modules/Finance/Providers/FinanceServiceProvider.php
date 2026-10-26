@@ -1,0 +1,74 @@
+<?php
+
+namespace Modules\Finance\Providers;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+use Modules\Core\Support\WatchedThresholds;
+use Modules\Finance\Console\Commands\BankInboxCommand;
+use Modules\Finance\Console\Commands\CloseWatchCommand;
+use Modules\Finance\Console\Commands\EnsureFiscalCalendarCommand;
+use Modules\Finance\Services\BudgetRealisationService;
+
+class FinanceServiceProvider extends ServiceProvider
+{
+    public function register(): void
+    {
+        //
+    }
+
+    public function boot(): void
+    {
+        $this->loadMigrationsFrom(__DIR__.'/../Database/Migrations');
+
+        $this->commands([
+            EnsureFiscalCalendarCommand::class,
+            CloseWatchCommand::class,
+            BankInboxCommand::class,
+        ]);
+
+        /*
+         * 05:30 the calendar, 08:15 the reminder — both WIB.
+         *
+         * The calendar runs before anyone is at a keyboard, so the first
+         * posting of the day never meets a missing period. The reminder runs
+         * after it and before the workday, so "periode 2026-06 belum ditutup"
+         * is waiting when finance opens the ERP rather than arriving mid-task.
+         *
+         * No cron change: /etc/cron.d/erp1 already runs schedule:run every
+         * minute, which is what CoreServiceProvider's backup watch rides on.
+         */
+        $this->callAfterResolving(Schedule::class, function (Schedule $schedule): void {
+            $schedule->command('fin:ensure-calendar')->dailyAt('05:30')->timezone('Asia/Jakarta');
+            $schedule->command('fin:close-watch')->dailyAt('08:15')->timezone('Asia/Jakarta');
+            // P-3c — folder terpantau rekening koran, tiap jam (roadmap: "impor
+            // dari folder terpantau per jam"). Folder yang belum ada = diam,
+            // keluar 0. Cadence-nya dipaku BankInboxTest lewat schedule:list;
+            // withoutOverlapping: jam berikutnya tidak menumpuk di atas pemeriksaan
+            // yang lambat (service-nya sendiri juga memegang kunci cache — V-folder-1).
+            $schedule->command('fin:bank-inbox')->hourly()->withoutOverlapping();
+        });
+
+        /*
+         * F-2 — Finance MEMASOK ukuran "anggaran proyek terpakai" ke registri
+         * Core. Arahnya sengaja begini: Core mendeklarasikan entrinya (label,
+         * izin, tautan, ambang, keadaan) tetapi tidak boleh tahu cara menghitung
+         * komitmen, dan menyalin SQL-nya ke Core berarti dua jawaban atas satu
+         * pertanyaan. Selama tidak ada yang memasok, entri itu SKIPPED di
+         * registri — bukan entri kosong yang terbaca "semua aman".
+         *
+         * Closure, bukan hasil: pemindaian bisa terjadi kapan saja setelah boot,
+         * dan menghitungnya di sini akan membebani SETIAP permintaan dengan
+         * kueri portofolio yang hampir tidak pernah dibaca.
+         */
+        WatchedThresholds::supply(
+            'project_budget_pct',
+            static fn (): array => app(BudgetRealisationService::class)->thresholdRows(),
+        );
+
+        Route::middleware('api')
+            ->prefix('api/finance')
+            ->group(__DIR__.'/../Routes/api.php');
+    }
+}

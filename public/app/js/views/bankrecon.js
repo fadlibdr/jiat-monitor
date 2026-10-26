@@ -1,0 +1,1304 @@
+/* Rekonsiliasi Bank — import a rekening koran, match its lines against what the
+ * ERP posted, and read the bridge from the bank's closing balance to the
+ * general ledger.
+ *
+ * The screen never posts. Every button here either reads, or records that a
+ * bank movement and an existing posting are the same event. When a difference
+ * needs a journal, it says so and sends the operator to the journal screen —
+ * two screens, one posting path.
+ *
+ * The file is sent as TEXT inside the ordinary JSON body: api.js authenticates
+ * on a header and serialises every body as JSON, so FormData would arrive as
+ * "{}". FileReader on this side, string on the wire, nothing written to disk. */
+
+import { api, session } from '../api.js';
+import {
+  el, clear, append, button, badge, icon, errorState, skeletonTable,
+  toast, toastError, modal, confirmDialog, withBusy, field,
+} from '../ui.js';
+import * as fmt from '../format.js';
+import { replacePath } from '../router.js';
+
+const TABS = [
+  // Every account at once, before drilling into one. The endpoint behind it has
+  // existed since the bridge was built and nothing ever called it.
+  { key: 'overview', label: 'Ringkasan Semua Rekening' },
+  { key: 'reconcile', label: 'Rekonsiliasi' },
+  { key: 'statements', label: 'Rekening Koran' },
+  { key: 'import', label: 'Impor' },
+  // P-3c: ledger folder terpantau — apa yang dibaca dari folder server, apa
+  // yang gagal dan mengapa, kapan terakhir diperiksa. Bukan klaim "aktif".
+  { key: 'inbox', label: 'Folder terpantau' },
+];
+
+const FILE_STATUS_TONE = { imported: 'green', failed: 'red', duplicate: 'amber', ignored: '', superseded: '', statement_deleted: 'amber' };
+
+/* Tautan dalam (notifikasi, tombol Buka): #/bank-recon?tab=inbox atau
+ * ?tab=statements&account=<id>&statement=<id>. Dibaca sekali saat layar dibuka. */
+function hashQuery() {
+  const hash = location.hash || '';
+  const cut = hash.indexOf('?');
+  return new URLSearchParams(cut === -1 ? '' : hash.slice(cut + 1));
+}
+
+const REASONS = {
+  bank_charge: 'Biaya/admin bank',
+  interest: 'Bunga/jasa giro',
+  unrecorded_receipt: 'Penerimaan belum dicatat',
+  unrecorded_payment: 'Pengeluaran belum dicatat',
+  bank_error: 'Kesalahan bank (menunggu koreksi)',
+  other: 'Lainnya',
+};
+
+/* What to do about each kind of difference. bank_error deliberately has no
+ * "book it" instruction: the money will come back, and booking a charge that
+ * later reverses puts fictitious expense in one month and fictitious income in
+ * the next while every reconciliation in between looks perfect. */
+const GUIDANCE = {
+  bank_charge: 'Bukukan sebagai voucher jurnal (Dr beban admin bank / Cr rekening bank), lalu cocokkan baris ini ke jurnal itu.',
+  interest: 'Bukukan sebagai voucher jurnal (Dr rekening bank / Cr pendapatan bunga), lalu cocokkan baris ini ke jurnal itu.',
+  unrecorded_receipt: 'Catat penerimaannya di Keuangan › Pembayaran, alokasikan ke invoice, posting, lalu cocokkan.',
+  unrecorded_payment: 'Catat pengeluarannya di Keuangan › Pembayaran, alokasikan ke tagihan, posting, lalu cocokkan.',
+  bank_error: 'Jangan dibukukan. Tunggu koreksi dari bank; baris ini tetap tampil sebagai selisih sampai koreksinya masuk.',
+  other: 'Selesaikan sesuai dokumen pendukungnya, lalu cocokkan atau biarkan tampil sebagai selisih.',
+};
+
+const DATE_FORMATS = ['dd/mm/yyyy', 'dd-mm-yyyy', 'yyyy-mm-dd', 'dd/mm/yy', 'dd/mm'];
+
+/* Some Finance endpoints paginate and some return a plain list, so the envelope
+ * arrives as either an array or a paginator. Reading `.data` off an array
+ * yields undefined and the screen renders "no data" over a full response. */
+function rows(payload) {
+  if (Array.isArray(payload)) return payload;
+  return (payload && payload.data) || [];
+}
+
+const state = {
+  tab: 'reconcile',
+  bankAccountId: null,
+  asOf: '',
+  statementId: null,
+};
+
+/* ---------------------------------------------------------------- overview */
+
+/**
+ * Every active bank account's bridge on one screen.
+ *
+ * The point of a list like this is the accounts that are NOT fine — an account
+ * whose bridge does not close, or that cannot be reconciled at all because it
+ * has no statement or no COA account. Those are shown as they are, not hidden
+ * behind a dash.
+ */
+function renderOverview(host, overview, onPick) {
+  const accounts = overview.rows || [];
+
+  if (!accounts.length) {
+    host.appendChild(el('.alert.warn', 'Belum ada rekening bank aktif.'));
+    return;
+  }
+
+  const unreconciled = accounts.filter((row) => !row.fully_reconciled).length;
+  const blocked = accounts.filter((row) => row.blocked).length;
+
+  host.appendChild(el('.stat-row', [
+    el('.stat', [el('.label', { text: 'Rekening aktif' }), el('.value.sm', { text: String(accounts.length) })]),
+    el('.stat', [
+      el('.label', { text: 'Belum tuntas' }),
+      el('.value.sm', { text: String(unreconciled) }),
+      unreconciled ? el('.delta.down', { text: 'masih ada pos terbuka' }) : null,
+    ]),
+    el('.stat', [
+      el('.label', { text: 'Tidak dapat direkonsiliasi' }),
+      el('.value.sm', { text: String(blocked) }),
+      blocked ? el('.delta.down', { text: 'lihat kolom catatan' }) : null,
+    ]),
+  ]));
+
+  host.appendChild(el('.card', [
+    el('.card-head', el('h2', { text: 'Ringkasan rekonsiliasi per rekening' })),
+    el('.table-wrap', el('table.data', [
+      el('thead', el('tr', [
+        el('th', { text: 'Rekening' }),
+        el('th.right', { text: 'Saldo rekening koran' }),
+        el('th.right', { text: 'Saldo buku besar' }),
+        el('th.right', { text: 'Selisih awal' }),
+        el('th.right', { text: 'Pos terbuka' }),
+        el('th', { text: 'Status' }),
+      ])),
+      el('tbody', accounts.map((row) => {
+        const node = el('tr', { style: { cursor: 'pointer' } }, [
+          el('td', el('span', [
+            el('span.cell-main', { text: row.bank_account.name }),
+            el('span.cell-sub.mono', { text: `${row.bank_account.bank_name || ''} ${row.bank_account.account_no || ''}`.trim() }),
+          ])),
+          el('td.right.num', { text: fmt.rupiah(row.statement_closing) }),
+          el('td.right.num', { text: fmt.rupiah(row.gl_balance) }),
+          el('td.right.num', {
+            text: fmt.rupiah(row.opening_difference),
+            style: Number(row.opening_difference) ? { color: 'var(--warning)' } : {},
+          }),
+          el('td.right.num', { text: row.open_items === null || row.open_items === undefined ? '—' : String(row.open_items) }),
+          el('td', row.blocked
+            ? badge(row.blocked, 'red')
+            : (row.fully_reconciled ? badge('Tuntas', 'green') : badge(row.bridge_closes ? 'Jembatan cocok' : 'Belum cocok', row.bridge_closes ? 'amber' : 'red'))),
+        ]);
+
+        node.addEventListener('click', () => onPick(row.bank_account.id));
+        return node;
+      })),
+    ])),
+  ]));
+}
+
+/* ------------------------------------------------------------------ import */
+
+function importDefaults() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const end = new Date(now.getFullYear(), now.getMonth(), 0);
+  return {
+    format: 'csv',
+    content: '',
+    filename: '',
+    mapping: {
+      delimiter: ';',
+      skip_rows: 1,
+      date_column: 0,
+      date_format: 'dd/mm/yyyy',
+      description_column: 1,
+      amount_mode: 'debit_credit',
+      debit_column: 2,
+      credit_column: 3,
+      amount_column: null,
+      indicator_column: null,
+      balance_column: null,
+      reference_column: null,
+      number_format: 'id',
+      period_start: fmt.toDateInput(start),
+      period_end: fmt.toDateInput(end),
+      opening_balance: 0,
+      closing_balance: 0,
+    },
+  };
+}
+
+function selectField(label, value, options, onChange, help) {
+  const select = el('select', {
+    onchange: (event) => onChange(event.target.value === '' ? null : event.target.value),
+  });
+  options.forEach(([optionValue, optionLabel]) => {
+    select.appendChild(el('option', { value: optionValue, text: optionLabel }));
+  });
+  select.value = value === null || value === undefined ? '' : String(value);
+  return field(label, select, { help });
+}
+
+function inputField(label, value, type, onChange, help) {
+  const input = el('input', {
+    type,
+    value: value === null || value === undefined ? '' : value,
+    oninput: (event) => onChange(event.target.value === '' ? null : event.target.value),
+  });
+  return field(label, input, { help });
+}
+
+function columnOptions() {
+  const options = [['', '— tidak ada —']];
+  for (let i = 0; i < 20; i++) options.push([String(i), `Kolom ${i + 1}`]);
+  return options;
+}
+
+/* Kunci pemetaan yang milik tiap berkas — dengan preset, hanya ini yang diketik. */
+const PER_FILE_KEYS = ['period_start', 'period_end', 'opening_balance', 'closing_balance'];
+
+function perFileMapping(mapping) {
+  const out = {};
+  PER_FILE_KEYS.forEach((key) => { out[key] = mapping[key]; });
+  return out;
+}
+
+function renderImport(host, accounts, onImported) {
+  const form = importDefaults();
+  // Start from the account chosen in the toolbar, not from whichever happens
+  // to be first — importing a statement against the wrong account is the one
+  // mistake here that is expensive to undo.
+  form.bankAccountId = state.bankAccountId ?? (accounts[0] && accounts[0].id);
+  const account = () => accounts.find((a) => a.id === form.bankAccountId) || null;
+  const savedPreset = () => (account() && account().import_preset) || null;
+  // Preset adalah PILIHAN EKSPLISIT (P-3c): dipakai hanya bila pemilih ini
+  // berkata begitu, dan pemilihnya hanya ada bila rekeningnya punya preset.
+  form.usePreset = Boolean(savedPreset());
+  const body = el('div');
+  const previewHost = el('div');
+  const registryHost = el('div');
+
+  function paint() {
+    clear(body);
+
+    const fileInput = el('input', {
+      type: 'file',
+      accept: '.csv,.txt,.sta,.940',
+      onchange: async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        form.content = await file.text();
+        form.filename = file.name;
+        if (/\.(sta|940)$/i.test(file.name) || form.content.includes(':61:')) form.format = 'mt940';
+        paint();
+        toast(`${file.name} dibaca (${Math.round(form.content.length / 1024)} kB).`);
+      },
+    });
+
+    const preset = savedPreset();
+
+    body.appendChild(el('.card', [
+      el('.card-head', [el('h2', { text: '1 · Berkas' })]),
+      el('.form-grid', [
+        selectField('Rekening bank', form.bankAccountId,
+          accounts.map((a) => [String(a.id), `${a.name} — ${a.bank_name} ${a.account_no}`]),
+          (value) => { form.bankAccountId = Number(value); form.usePreset = Boolean(savedPreset()); clear(previewHost); paint(); }),
+        selectField('Format', form.format, [['csv', 'CSV rekening koran'], ['mt940', 'MT940 (SWIFT)']],
+          (value) => { form.format = value; paint(); }),
+        field('Berkas', fileInput, {
+          help: form.filename
+            ? `Terbaca: ${form.filename}`
+            : 'Berkas dibaca di peramban dan dikirim sebagai teks; tidak ada berkas yang disimpan di server.',
+        }),
+        form.format === 'csv' && preset
+          ? selectField('Pemetaan kolom', form.usePreset ? 'preset' : 'manual', [
+            ['preset', `Preset rekening ini: «${preset.name}»`],
+            ['manual', 'Tetapkan kolom sendiri'],
+          ], (value) => { form.usePreset = value === 'preset'; clear(previewHost); paint(); },
+          'Preset dipakai hanya bila dipilih di sini. Kolom tidak pernah ditebak dari isi berkas.')
+          : null,
+      ].filter(Boolean)),
+    ]));
+
+    if (form.format === 'csv') {
+      body.appendChild(form.usePreset && preset ? presetCard(form, preset, onPresetDeleted) : mappingCard(form, paint));
+    }
+
+    body.appendChild(el('.card-foot', [
+      button('Pratinjau', {
+        variant: 'primary',
+        iconName: 'search',
+        onClick: (event) => withBusy(event.currentTarget, () => preview(event.currentTarget)),
+      }),
+    ]));
+  }
+
+  function usingPreset() {
+    return form.format === 'csv' && form.usePreset && Boolean(savedPreset());
+  }
+
+  async function payload() {
+    return {
+      bank_account_id: form.bankAccountId,
+      format: form.format,
+      content: form.content,
+      use_preset: usingPreset(),
+      mapping: form.format === 'csv' ? (usingPreset() ? perFileMapping(form.mapping) : form.mapping) : undefined,
+    };
+  }
+
+  async function onPresetDeleted() {
+    const current = account();
+    if (!current) return;
+    await api.del(`finance/bank-accounts/${current.id}/import-preset`);
+    current.import_preset = null;
+    form.usePreset = false;
+    toast('Preset rekening dihapus.');
+    clear(previewHost);
+    paint();
+  }
+
+  /* Simpan preset dari pemetaan yang BARU SAJA berhasil dipratinjau — tombolnya
+   * hanya ada di kartu pratinjau yang hijau, jadi tidak ada preset yang lahir
+   * dari pemetaan yang belum pernah dilihat orang. */
+  function offerSavePreset(result) {
+    if (form.format !== 'csv' || !result.can_import || usingPreset() || !session.can('fin.update')) return null;
+    return (node) => {
+      const nameInput = el('input', { type: 'text', maxLength: 60, value: savedPreset() ? savedPreset().name : '', placeholder: 'mis. BCA KlikBCA Bisnis' });
+      const save = button('Simpan preset', {
+        variant: 'primary',
+        onClick: (event) => withBusy(event.currentTarget, async () => {
+          const name = nameInput.value.trim();
+          if (!name) { toastError(new Error('Beri nama presetnya.')); return; }
+          try {
+            const current = account();
+            const saved = await api.put(`finance/bank-accounts/${current.id}/import-preset`, {
+              name, format: 'csv', content: form.content, mapping: form.mapping,
+            });
+            current.import_preset = saved;
+            dialog.close();
+            toast(`Preset «${saved.name}» disimpan untuk rekening ${current.code}.`);
+            form.usePreset = true;
+            clear(previewHost);
+            paint();
+          } catch (error) {
+            toastError(error);
+          }
+        }),
+      });
+      const dialog = modal({
+        title: 'Simpan sebagai preset rekening ini',
+        body: el('div', [
+          el('p.muted', { text: 'Yang disimpan: pemisah, kolom, format tanggal/angka, dan sel baris judul pada kolom yang '
+            + 'dipetakan. Periode dan saldo tidak disimpan — keduanya milik tiap berkas. Bulan depan berkas yang judul '
+            + 'kolomnya bergeser akan ditolak dengan menyebut kolomnya.' }),
+          field('Nama preset', nameInput, { required: true }),
+        ]),
+        footer: [button('Batal', { onClick: () => dialog.close() }), save],
+        initialFocus: nameInput,
+      });
+      void node;
+    };
+  }
+
+  async function preview() {
+    clear(previewHost);
+    if (!form.content) { toastError(new Error('Pilih berkas rekening koran lebih dulu.')); return; }
+    try {
+      const result = await api.post('finance/bank-statements/preview', await payload());
+      previewHost.appendChild(previewCard(result, async (node) => {
+        await withBusy(node, async () => {
+          const created = await api.post('finance/bank-statements', await payload());
+          toast(`Rekening koran ${created.code} diimpor.`);
+          clear(previewHost);
+          onImported(created);
+        });
+      }, offerSavePreset(result)));
+    } catch (error) {
+      previewHost.appendChild(errorState(error, () => preview()));
+    }
+  }
+
+  paint();
+  host.append(body, previewHost, registryHost);
+  presetRegistryCard(registryHost);
+}
+
+/* Kartu preset rekening: kolom dibaca dari preset, periode/saldo tetap diketik. */
+function presetCard(form, preset, onDelete) {
+  const m = form.mapping;
+  const set = (key) => (value) => { m[key] = value === null ? null : value; };
+  const setNum = (key) => (value) => { m[key] = value === null ? null : Number(value); };
+  // Daftar {index, cell} dari server (bukan peta berindeks: JsonResource membuang kunci numerik).
+  const header = Array.isArray(preset.expected_header) && preset.expected_header.length
+    ? preset.expected_header.map((h) => `Kolom ${Number(h.index) + 1} '${h.cell}'`).join(' · ')
+    : null;
+
+  return el('.card.bank-preset-card', [
+    el('.card-head', [
+      el('h2', { text: `2 · Preset «${preset.name}»` }),
+      el('.spacer'),
+      session.can('fin.update')
+        ? button('Hapus preset', {
+          size: 'sm', variant: 'ghost', iconName: 'trash',
+          onClick: () => confirmDialog({
+            title: `Hapus preset «${preset.name}»?`,
+            message: 'Rekening ini kembali tanpa preset: pemetaan kolom diketik lagi di layar, dan berkas CSV di folder '
+              + 'terpantau untuk rekening ini tidak bisa diimpor sampai preset baru disimpan.',
+            onConfirm: onDelete,
+          }),
+        })
+        : null,
+    ]),
+    el('.alert.info', [
+      icon('warn', 15),
+      el('div', { text: 'Kolom dibaca dari preset; periode dan saldo tetap Anda ketik dari lembar rekening koran. '
+        + 'Berkas yang judul kolomnya bergeser ditolak dengan menyebut kolomnya — bukan diimpor keliru-tetapi-seimbang.' }),
+    ]),
+    el('.card-body', { style: { display: 'grid', gap: '4px', fontSize: '12px', minWidth: 0 } }, [
+      el('.muted', { text: `Disimpan ${preset.saved_at ? fmt.dateTime(preset.saved_at) : '—'}.` }),
+      el('.muted.bank-preset-header', { style: { overflowWrap: 'anywhere' }, text: header ? `Judul kolom yang diingat: ${header}` : (preset.header_note || '') }),
+      preset.mapping && (preset.mapping.balance_column === null || preset.mapping.balance_column === undefined)
+        ? el('div', { style: { color: 'var(--warning)' }, text: 'Preset ini tidak memetakan kolom saldo: berkas CSV rekening ini di folder terpantau tidak bisa diimpor otomatis; impor lewat layar ini.' })
+        : null,
+    ]),
+    el('.form-grid', [
+      inputField('Periode mulai', m.period_start, 'date', set('period_start')),
+      inputField('Periode selesai', m.period_end, 'date', set('period_end')),
+      inputField('Saldo awal', m.opening_balance, 'number', setNum('opening_balance')),
+      inputField('Saldo akhir', m.closing_balance, 'number', setNum('closing_balance')),
+    ]),
+  ]);
+}
+
+/* Registri preset bawaan per bank — setiap kalimat dari API (BankPresets), SPA
+ * hanya memilih warna lencana. Hari ini keempatnya menunggu berkas ekspor
+ * nyata milik pemilik (docs/samples/bank/README.md); tidak satu pun bisa dipilih. */
+async function presetRegistryCard(host) {
+  clear(host);
+  let registry;
+  try {
+    registry = await api.get('finance/bank-statements/presets');
+  } catch (error) {
+    host.appendChild(errorState(error, () => presetRegistryCard(host)));
+    return;
+  }
+  const presets = registry.presets || [];
+  const headBadge = badge(registry.summary.label, registry.summary.verified === registry.summary.total ? 'green' : 'amber');
+  Object.assign(headBadge.style, { whiteSpace: 'normal', height: 'auto' });
+  const text = { fontSize: '12px', minWidth: 0, overflowWrap: 'anywhere' };
+
+  host.appendChild(el('.card', { style: { minWidth: 0 } }, [
+    el('.card-head.bank-presets-head', { style: { flexWrap: 'wrap', rowGap: '6px' } }, [
+      el('h2', { text: 'Preset bawaan per bank' }),
+      el('.spacer'),
+      headBadge,
+    ]),
+    el('.card-body', { style: { display: 'grid', gap: '10px', minWidth: 0 } }, presets.map((preset) => el('.bank-preset', {
+      'data-key': preset.key,
+      'data-selectable': String(Boolean(preset.selectable)),
+      'data-verified': String(Boolean(preset.verified)),
+      style: { display: 'grid', gap: '4px', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius)', minWidth: 0 },
+    }, [
+      el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', minWidth: 0 } }, [
+        el('strong', { style: { minWidth: 0, overflowWrap: 'anywhere' }, text: `${preset.label} — ${preset.bank}` }),
+        (() => { const b = badge(preset.badge_label, preset.verified ? 'green' : 'amber'); Object.assign(b.style, { whiteSpace: 'normal', height: 'auto' }); return b; })(),
+      ]),
+      el('.muted', { style: text, text: `Kanal: ${(preset.channels || []).join(' · ')}` }),
+      el('.muted.bank-preset-verification', { style: text, text: preset.verification }),
+      preset.awaiting_file ? el('.bank-preset-awaiting', { style: { ...text, color: 'var(--warning)' }, text: preset.awaiting_file }) : null,
+      preset.demo_note ? el('.muted.bank-preset-demo', { style: text, text: preset.demo_note }) : null,
+    ]))),
+  ]));
+}
+
+function mappingCard(form, repaint) {
+  const m = form.mapping;
+  const set = (key) => (value) => { m[key] = value === null ? null : value; };
+  const setNum = (key) => (value) => { m[key] = value === null ? null : Number(value); };
+
+  const amountFields = m.amount_mode === 'debit_credit'
+    ? [
+      selectField('Kolom debit (keluar)', m.debit_column, columnOptions(), setNum('debit_column')),
+      selectField('Kolom kredit (masuk)', m.credit_column, columnOptions(), setNum('credit_column')),
+    ]
+    : [
+      selectField('Kolom nilai', m.amount_column, columnOptions(), setNum('amount_column')),
+      m.amount_mode === 'single_with_indicator'
+        ? selectField('Kolom penanda D/K', m.indicator_column, columnOptions(), setNum('indicator_column'),
+          'Kosongkan bila penandanya menempel pada sel nilai, mis. "500.000,00 DB".')
+        : null,
+    ];
+
+  return el('.card', [
+    el('.card-head', [el('h2', { text: '2 · Pemetaan kolom' })]),
+    el('.alert.info', [
+      icon('warn', 15),
+      el('div', { text: 'Kolom tidak ditebak. Tidak ada format CSV rekening koran yang baku di Indonesia, '
+        + 'dan tebakan yang benar sembilan kali lalu salah sekali menghasilkan berkas yang terimpor rapi '
+        + 'dan salah. Tetapkan kolomnya, lalu periksa pratinjaunya.' }),
+    ]),
+    el('.form-grid', [
+      selectField('Pemisah kolom', m.delimiter,
+        [[';', 'Titik koma ( ; )'], [',', 'Koma ( , )'], ['|', 'Garis tegak ( | )'], ['tab', 'Tab']],
+        (value) => { m.delimiter = value; }),
+      selectField('Format angka', m.number_format, [['id', 'Indonesia — 1.234.567,89'], ['en', 'Inggris — 1,234,567.89']],
+        (value) => { m.number_format = value; }),
+      inputField('Baris judul yang dilewati', m.skip_rows, 'number', setNum('skip_rows')),
+      selectField('Kolom tanggal', m.date_column, columnOptions(), setNum('date_column')),
+      selectField('Format tanggal', m.date_format, DATE_FORMATS.map((f) => [f, f]), (value) => { m.date_format = value; }),
+      selectField('Kolom keterangan', m.description_column, columnOptions(), setNum('description_column')),
+      selectField('Mode nilai', m.amount_mode, [
+        ['debit_credit', 'Dua kolom: debit & kredit'],
+        ['single_signed', 'Satu kolom bertanda (+/−)'],
+        ['single_with_indicator', 'Satu kolom + penanda D/K'],
+      ], (value) => { m.amount_mode = value; repaint(); }),
+      ...amountFields.filter(Boolean),
+      selectField('Kolom saldo', m.balance_column, columnOptions(), setNum('balance_column'),
+        'Sangat dianjurkan. Saldo berjalan bank adalah satu-satunya pemeriksaan yang tidak bergantung '
+        + 'pada angka yang Anda ketik, dan menunjuk baris yang salah baca. Wajib bila rekening ini '
+        + 'akan diimpor dari folder terpantau.'),
+      selectField('Kolom referensi', m.reference_column, columnOptions(), setNum('reference_column')),
+      inputField('Periode mulai', m.period_start, 'date', set('period_start')),
+      inputField('Periode selesai', m.period_end, 'date', set('period_end')),
+      inputField('Saldo awal', m.opening_balance, 'number', setNum('opening_balance')),
+      inputField('Saldo akhir', m.closing_balance, 'number', setNum('closing_balance')),
+    ]),
+  ]);
+}
+
+function previewCard(result, onImport, onSavePreset) {
+  const s = result.statement;
+  const blocked = !result.can_import;
+  const preset = result.preset || { used: false, name: null };
+
+  return el('.card', [
+    el('.card-head', [
+      el('h2', { text: '3 · Pratinjau' }),
+      el('.spacer'),
+      preset.used ? badge(`Preset «${preset.name}»`, '') : null,
+      badge(s.ties_out ? 'Seimbang' : 'Tidak seimbang', s.ties_out ? 'green' : 'red'),
+    ]),
+    el('.stat-row', [
+      el('.stat', [el('.label', { text: 'Saldo awal' }), el('.value.sm', { text: fmt.rupiah(s.opening_balance) })]),
+      el('.stat', [el('.label', { text: 'Mutasi' }), el('.value.sm', { text: fmt.rupiah(s.movement) })]),
+      el('.stat', [el('.label', { text: 'Saldo akhir' }), el('.value.sm', { text: fmt.rupiah(s.closing_balance) })]),
+      el('.stat', [el('.label', { text: 'Jumlah mutasi' }), el('.value', { text: String(s.line_count) })]),
+    ]),
+    ...(result.blockers || []).map((text) => el('.alert.error', [icon('warn', 15), el('div', { text })])),
+    ...(s.warnings || []).map((text) => el('.alert.warn', [icon('warn', 15), el('div', { text })])),
+    el('.table-wrap', el('table.data', [
+      el('thead', el('tr', [
+        el('th', { text: '#' }), el('th', { text: 'Tanggal' }), el('th', { text: 'Keterangan' }),
+        el('th', { text: 'Referensi' }), el('th.right', { text: 'Debit' }), el('th.right', { text: 'Kredit' }),
+      ])),
+      el('tbody', s.lines.slice(0, 200).map((line) => el('tr', [
+        el('td.code', { text: String(line.line_no) }),
+        el('td', { text: fmt.date(line.entry_date) }),
+        el('td', { text: line.description || '—' }),
+        el('td.code', { text: line.bank_reference || line.customer_reference || '—' }),
+        el('td.right.num', { text: line.direction === 'debit' ? fmt.rupiah(line.amount) : '' }),
+        el('td.right.num', { text: line.direction === 'credit' ? fmt.rupiah(line.amount) : '' }),
+      ]))),
+    ])),
+    s.lines.length > 200 ? el('p.muted', { text: `Menampilkan 200 dari ${s.lines.length} baris.` }) : null,
+    el('.card-foot', [
+      button('Impor rekening koran', {
+        variant: 'primary',
+        iconName: 'check',
+        disabled: blocked,
+        title: blocked ? 'Perbaiki hal di atas lebih dulu' : undefined,
+        onClick: (event) => onImport(event.currentTarget),
+      }),
+      onSavePreset
+        ? button('Simpan sebagai preset rekening ini', {
+          variant: 'ghost',
+          iconName: 'check',
+          title: 'Ingat pemetaan kolom ini (dan judul kolomnya) untuk berkas rekening ini bulan berikutnya',
+          onClick: (event) => onSavePreset(event.currentTarget),
+        })
+        : null,
+    ]),
+  ]);
+}
+
+/* -------------------------------------------------------------- statements */
+
+function renderStatements(host, statements, suggestions, onChanged) {
+  if (!statements.length) {
+    host.appendChild(el('.card', el('.card-body', el('p.muted', {
+      text: 'Belum ada rekening koran yang diimpor untuk rekening ini.', style: { margin: 0 },
+    }))));
+    return;
+  }
+
+  const active = statements.find((s) => s.id === state.statementId) || statements[0];
+  state.statementId = active.id;
+
+  const optionLabel = (s) =>
+    `${s.code} · ${fmt.date(s.period_start)} – ${fmt.date(s.period_end)} · ${s.matched_lines_count}/${s.lines_count} cocok`;
+
+  const picker = el('select.filter-w', {
+    onchange: (event) => { state.statementId = Number(event.target.value); onChanged(); },
+  });
+  const options = new Map();
+  statements.forEach((s) => {
+    const option = el('option', { value: s.id, text: optionLabel(s) });
+    options.set(s.id, option);
+    picker.appendChild(option);
+  });
+  picker.value = String(active.id);
+
+  // Hitungan "X/Y cocok" pada picker ikut bergerak saat satu baris berubah —
+  // tanpa render ulang, jadi tanpa kehilangan posisi gulir (Temuan 18).
+  const refreshCounts = () => {
+    const option = options.get(active.id);
+    if (option) option.textContent = optionLabel(active);
+  };
+
+  host.appendChild(el('.filters', { style: { border: '1px solid var(--border)', borderRadius: 'var(--radius)', marginBottom: '16px' } }, [
+    picker,
+    el('.spacer'),
+    session.can('fin.delete')
+      ? button('Hapus', {
+        variant: 'danger', size: 'sm', iconName: 'trash',
+        onClick: () => confirmDialog({
+          title: `Hapus ${active.code}?`,
+          message: 'Rekening koran hanya dapat dihapus selama belum ada baris yang dicocokkan. '
+            + 'Ini cara memperbaiki impor dengan pemetaan kolom yang salah.',
+          onConfirm: async () => {
+            await api.del(`finance/bank-statements/${active.id}`);
+            state.statementId = null;
+            toast('Rekening koran dihapus.');
+            onChanged();
+          },
+        }),
+      })
+      : null,
+  ]));
+
+  host.appendChild(linesCard(active, suggestions, onChanged, refreshCounts));
+}
+
+function matchStatusBadge(line) {
+  if (line.match_status === 'matched') return badge('Cocok', 'green');
+  if (line.match_status === 'no_match') return badge('Tanpa padanan', 'amber');
+  return badge('Belum ditinjau', '');
+}
+
+/* Satu <tr> yang menggambar ulang DIRINYA saja setelah cocok/batal/tanpa
+ * padanan (Temuan 18). Jalur lama memanggil load(): seluruh body dibuang, dua
+ * request diulang, tabel dirender dari nol — mencocokkan rekening koran 200
+ * baris berarti 200 kali kembali ke puncak halaman. Sel yang berubah karena
+ * satu aksi hanyalah sel status dan sel padanan baris itu; sel tanggal/nilai
+ * ikut digambar ulang karena barisnya satu unit, tetapi DOM di luar baris ini
+ * tidak disentuh sama sekali — posisi gulir bertahan.
+ *
+ * Respons match/unmatch/no-match sudah mengembalikan baris terbaru (kontrak
+ * server tidak berubah); hanya matched_code yang tidak ikut — ia dilekatkan
+ * show() dari dua query terpisah — jadi kode dokumen diambil dari kandidat
+ * yang barusan diklik. Saran padanan baris LAIN dibiarkan apa adanya: bisa
+ * basi (dokumen yang sama dimenangkan baris ini), dan server tetap menolak
+ * pencocokan ganda — tombol "Muat ulang" di kepala kartu adalah jalur
+ * sinkronisasi penuhnya. */
+function lineRow(line, candidates, onCounted) {
+  const tr = el('tr');
+  let current = line;
+
+  function applyUpdate(updated, matchedCode) {
+    const wasMatched = current.match_status === 'matched';
+    current = { ...current, ...updated, matched_code: matchedCode ?? null };
+    const isMatched = current.match_status === 'matched';
+    if (isMatched !== wasMatched) onCounted(isMatched ? 1 : -1);
+    paint();
+  }
+
+  function paint() {
+    clear(tr);
+    append(tr, [
+      el('td.code', { text: String(current.line_no) }),
+      el('td', { text: fmt.date(current.entry_date) }),
+      el('td', [
+        el('.cell-main', { text: current.description || '—' }),
+        el('.cell-sub', { text: current.bank_reference || current.customer_reference || '' }),
+      ]),
+      el('td.right.num', { text: current.direction === 'debit' ? fmt.rupiah(current.amount) : '' }),
+      el('td.right.num', { text: current.direction === 'credit' ? fmt.rupiah(current.amount) : '' }),
+      el('td', [
+        matchStatusBadge(current),
+        current.note_reason ? el('.cell-sub', { text: REASONS[current.note_reason] || current.note_reason }) : null,
+      ]),
+      el('td', matchCell(current, candidates, applyUpdate)),
+    ]);
+  }
+
+  paint();
+  return tr;
+}
+
+function linesCard(statement, suggestions, onChanged, onCountsChanged) {
+  const rows = (statement.lines || []).map((line) => lineRow(line, suggestions[line.id] || [], (delta) => {
+    statement.matched_lines_count = (statement.matched_lines_count || 0) + delta;
+    onCountsChanged();
+  }));
+
+  return el('.card', [
+    el('.card-head', [
+      el('h2', { text: `Mutasi — ${statement.code}` }),
+      el('.spacer'),
+      el('.muted', { text: `${fmt.rupiah(statement.opening_balance)} → ${fmt.rupiah(statement.closing_balance)}` }),
+      // Sinkronisasi penuh atas permintaan: ambil ulang detail + saran
+      // padanan. Satu-satunya jalur yang menyegarkan saran baris lain setelah
+      // serangkaian pencocokan in-situ.
+      button('Muat ulang', {
+        size: 'sm', variant: 'ghost', iconName: 'refresh',
+        title: 'Ambil ulang detail rekening koran dan saran padanan',
+        onClick: () => onChanged(),
+      }),
+    ]),
+    el('.table-wrap', el('table.data', [
+      el('thead', el('tr', [
+        el('th', { text: '#' }), el('th', { text: 'Tanggal' }), el('th', { text: 'Keterangan' }),
+        el('th.right', { text: 'Debit' }), el('th.right', { text: 'Kredit' }),
+        el('th', { text: 'Status' }), el('th', { text: 'Padanan' }),
+      ])),
+      el('tbody', rows),
+    ])),
+  ]);
+}
+
+/**
+ * @param {Function} applyUpdate (updatedLine, matchedCode?) — repaints the ROW
+ *                   in place; never re-renders the tab (Temuan 18).
+ */
+function matchCell(line, candidates, applyUpdate) {
+  const canEdit = session.can('fin.update');
+  const best = candidates[0];
+
+  if (line.match_status === 'matched') {
+    return el('div', [
+      el('.cell-main', {
+        text: line.matched_code
+          || `${line.matched_type === 'payment' ? 'Pembayaran' : 'Jurnal'} #${line.matched_id}`,
+      }),
+      canEdit
+        ? button('Batalkan', {
+          size: 'sm', variant: 'ghost',
+          onClick: (event) => withBusy(event.currentTarget, async () => {
+            try {
+              const updated = await api.post(`finance/bank-statement-lines/${line.id}/unmatch`);
+              toast('Pencocokan dibatalkan.');
+              applyUpdate(updated);
+            } catch (error) {
+              toastError(error);
+            }
+          }),
+        })
+        : null,
+    ]);
+  }
+
+  if (!canEdit) return el('span.muted', { text: '—' });
+
+  const actions = [];
+
+  if (best) {
+    actions.push(button(`${best.code} · ${fmt.date(best.date)}`, {
+      size: 'sm',
+      variant: best.confidence === 'high' ? 'primary' : '',
+      title: `Skor ${best.score} · beda ${best.days_apart} hari`,
+      onClick: (event) => withBusy(event.currentTarget, async () => {
+        try {
+          const updated = await api.post(`finance/bank-statement-lines/${line.id}/match`, {
+            matched_type: best.matched_type, matched_id: best.matched_id,
+          });
+          toast('Baris dicocokkan.');
+          applyUpdate(updated, best.code);
+        } catch (error) {
+          // Termasuk saran yang basi (dokumennya sudah dimenangkan baris
+          // lain): server menolak, barisnya tidak berubah, toast menyebut
+          // sebabnya — "Muat ulang" di kepala kartu menyegarkan sarannya.
+          toastError(error);
+        }
+      }),
+    }));
+  }
+
+  actions.push(button(candidates.length > 1 ? `Pilihan lain (${candidates.length - 1})` : 'Cari padanan', {
+    size: 'sm', variant: 'ghost',
+    onClick: () => openMatchModal(line, applyUpdate),
+  }));
+
+  actions.push(button('Tanpa padanan', {
+    size: 'sm', variant: 'ghost',
+    onClick: () => openNoMatchModal(line, applyUpdate),
+  }));
+
+  return el('.row-actions', actions);
+}
+
+function openMatchModal(line, applyUpdate) {
+  const body = el('div', skeletonTable(4, 3));
+
+  const dialog = modal({
+    title: `Cari padanan — ${fmt.rupiah(line.amount)} ${line.direction === 'credit' ? 'masuk' : 'keluar'} ${fmt.date(line.entry_date)}`,
+    body,
+    width: 'wide',
+  });
+
+  api.get(`finance/bank-statement-lines/${line.id}/suggestions`).then((candidates) => {
+    clear(body);
+
+    if (!candidates.length) {
+      body.appendChild(el('p.muted', {
+        text: 'Tidak ada dokumen terposting dengan nilai yang sama persis pada rentang tanggal ini. '
+          + 'Pencocokan sebagian tidak didukung: satu mutasi bank harus sama persis dengan satu dokumen.',
+      }));
+      return;
+    }
+
+    body.appendChild(el('.table-wrap', el('table.data', [
+      el('thead', el('tr', [
+        el('th', { text: 'Dokumen' }), el('th', { text: 'Tanggal' }), el('th', { text: 'Keterangan' }),
+        el('th.right', { text: 'Nilai' }), el('th', { text: 'Keyakinan' }), el('th', { text: '' }),
+      ])),
+      el('tbody', candidates.map((candidate) => el('tr', [
+        el('td.code', { text: candidate.code }),
+        el('td', { text: fmt.date(candidate.date) }),
+        el('td', { text: candidate.description || '—' }),
+        el('td.right.num', { text: fmt.rupiah(candidate.amount) }),
+        el('td', badge(
+          candidate.confidence === 'high' ? 'Tinggi' : candidate.confidence === 'medium' ? 'Sedang' : 'Rendah',
+          candidate.confidence === 'high' ? 'green' : candidate.confidence === 'medium' ? 'amber' : '',
+        )),
+        el('td', button('Cocokkan', {
+          size: 'sm', variant: 'primary',
+          onClick: (event) => withBusy(event.currentTarget, async () => {
+            try {
+              const updated = await api.post(`finance/bank-statement-lines/${line.id}/match`, {
+                matched_type: candidate.matched_type, matched_id: candidate.matched_id,
+              });
+              dialog.close();
+              toast('Baris dicocokkan.');
+              applyUpdate(updated, candidate.code);
+            } catch (error) {
+              toastError(error);
+            }
+          }),
+        })),
+      ]))),
+    ])));
+  }).catch((error) => clear(body).appendChild(errorState(error)));
+}
+
+function openNoMatchModal(line, applyUpdate) {
+  let reason = 'bank_charge';
+  const guidance = el('.alert.info', [icon('warn', 15), el('div', { text: GUIDANCE[reason] })]);
+
+  const select = el('select', {
+    onchange: (event) => {
+      reason = event.target.value;
+      clear(guidance).append(icon('warn', 15), el('div', { text: GUIDANCE[reason] }));
+    },
+  });
+  Object.entries(REASONS).forEach(([value, label]) => select.appendChild(el('option', { value, text: label })));
+
+  const note = el('textarea', { rows: 3, placeholder: 'Catatan (opsional)' });
+
+  const save = button('Simpan', {
+    variant: 'primary',
+    onClick: (event) => withBusy(event.currentTarget, async () => {
+      try {
+        const updated = await api.post(`finance/bank-statement-lines/${line.id}/no-match`, { reason, note: note.value || null });
+        dialog.close();
+        toast('Baris ditandai tanpa padanan.');
+        applyUpdate(updated);
+      } catch (error) {
+        toastError(error);
+      }
+    }),
+  });
+
+  const dialog = modal({
+    title: 'Tandai tanpa padanan',
+    body: el('div', [
+      el('p.muted', {
+        text: 'Baris ini tetap dihitung sebagai selisih rekonsiliasi — ini uang yang benar-benar '
+          + 'dipindahkan bank. Yang berubah hanya: baris ini sudah ditinjau, dan alasannya tercatat.',
+      }),
+      field('Alasan', select),
+      field('Catatan', note),
+      guidance,
+    ]),
+    footer: [button('Batal', { onClick: () => dialog.close() }), save],
+  });
+}
+
+/* ---------------------------------------------------------- reconciliation */
+
+function bridgeRow(label, value, { sign = '', strong = false, muted = false } = {}) {
+  return el(`tr${strong ? '.total-row' : ''}`, [
+    el('td', { text: label, style: muted ? { color: 'var(--text-2)' } : {} }),
+    el('td.right', { text: sign }),
+    el('td.right.num', { text: fmt.rupiah(value) }),
+  ]);
+}
+
+function renderReconciliation(host, report) {
+  const b = report.bridge;
+  const s = report.summary;
+
+  const tone = s.fully_reconciled ? 'green' : (s.bridge_closes ? 'amber' : 'red');
+  const label = s.fully_reconciled
+    ? 'Cocok sepenuhnya'
+    : (s.bridge_closes ? `Selisih dijelaskan — ${s.open_items} pos terbuka` : 'Ada selisih yang belum dijelaskan');
+
+  host.appendChild(el('.stat-row', [
+    el('.stat', [
+      el('.label', { text: 'Saldo rekening koran' }),
+      el('.value.sm', { text: fmt.rupiah(b.statement_closing) }),
+      el('.delta', { text: `s/d ${fmt.date(report.as_of)}` }),
+    ]),
+    el('.stat', [
+      el('.label', { text: 'Saldo buku besar' }),
+      el('.value.sm', { text: fmt.rupiah(b.gl_balance) }),
+      el('.delta', { text: `${report.bank_account.coa_code} ${report.bank_account.coa_name || ''}` }),
+    ]),
+    el('.stat', [
+      el('.label', { text: 'Pos terbuka' }),
+      el('.value', { text: String(s.open_items) }),
+      el('.delta', { text: `${s.matched_lines}/${s.total_lines} mutasi dicocokkan` }),
+    ]),
+    el('.stat', [
+      el('.label', { text: 'Selisih belum dijelaskan' }),
+      el('.value.sm', { text: fmt.rupiah(b.residual), style: b.residual ? { color: 'var(--danger)' } : {} }),
+      el('.delta', { text: b.residual ? 'periksa data' : 'nihil' }),
+    ]),
+  ]));
+
+  host.appendChild(el('.card', [
+    el('.card-head', [el('h2', { text: 'Jembatan rekonsiliasi' }), el('.spacer'), badge(label, tone)]),
+    el('.table-wrap', el('table.data', [
+      el('tbody', [
+        bridgeRow('Saldo akhir rekening koran', b.statement_closing),
+        b.opening_difference
+          ? bridgeRow('Selisih saldo awal (sebelum periode impor pertama)', b.opening_difference, { sign: '+' })
+          : null,
+        bridgeRow('Sudah dibukukan, belum tampak di bank — penerimaan', b.on_books_not_on_bank_debit, { sign: '+' }),
+        bridgeRow('Sudah dibukukan, belum tampak di bank — pengeluaran', b.on_books_not_on_bank_credit, { sign: '−' }),
+        bridgeRow('Ada di bank, belum dibukukan — penerimaan', b.on_bank_not_on_books_credit, { sign: '−' }),
+        bridgeRow('Ada di bank, belum dibukukan — pengeluaran', b.on_bank_not_on_books_debit, { sign: '+' }),
+        b.residual ? bridgeRow('Selisih belum dijelaskan', b.residual, { sign: '+' }) : null,
+        bridgeRow('Saldo buku besar', b.gl_balance, { sign: '=', strong: true }),
+      ].filter(Boolean)),
+    ])),
+  ]));
+
+  if (!s.opening_difference_explained) {
+    host.appendChild(el('.alert.warn', [
+      icon('warn', 15),
+      el('div', { text: 'Saldo awal rekening koran pertama tidak sama dengan saldo buku besar sebelum periode itu. '
+        + 'Selisihnya bukan pos berjalan — sesuaikan saldo pembukaan, atau impor periode sebelumnya.' }),
+    ]));
+  }
+
+  if ((report.possible_mismatches || []).length) {
+    host.appendChild(mismatchCard(report.possible_mismatches));
+  }
+
+  host.appendChild(openItemsCard(
+    'Ada di bank, belum dibukukan',
+    report.categories.on_bank_not_on_books,
+    (item) => [
+      el('td', { text: fmt.date(item.date) }),
+      el('td', [
+        el('.cell-main', { text: item.description || '—' }),
+        item.pending_counterpart_date
+          ? el('.cell-sub', { text: `sudah dicocokkan, dibukukan ${fmt.date(item.pending_counterpart_date)}` })
+          : el('.cell-sub', { text: item.note_reason_label || '' }),
+      ]),
+      el('td.right.num', { text: item.direction === 'debit' ? fmt.rupiah(item.amount) : '' }),
+      el('td.right.num', { text: item.direction === 'credit' ? fmt.rupiah(item.amount) : '' }),
+    ],
+  ));
+
+  host.appendChild(openItemsCard(
+    'Sudah dibukukan, belum tampak di bank',
+    report.categories.on_books_not_on_bank,
+    (item) => [
+      el('td', { text: fmt.date(item.date) }),
+      el('td', [el('.cell-main', { text: item.code || '—' }), el('.cell-sub', { text: item.description || '' })]),
+      el('td.right.num', { text: item.direction === 'debit' ? fmt.rupiah(item.amount) : '' }),
+      el('td.right.num', { text: item.direction === 'credit' ? fmt.rupiah(item.amount) : '' }),
+    ],
+  ));
+}
+
+function openItemsCard(title, items, cells) {
+  return el('.card', [
+    el('.card-head', [el('h2', { text: `${title} (${items.length})` })]),
+    items.length
+      ? el('.table-wrap', el('table.data', [
+        el('thead', el('tr', [
+          el('th', { text: 'Tanggal' }), el('th', { text: 'Keterangan' }),
+          el('th.right', { text: 'Debit' }), el('th.right', { text: 'Kredit' }),
+        ])),
+        el('tbody', items.map((item) => el('tr', cells(item)))),
+      ]))
+      : el('.card-body', el('p.muted', { text: 'Tidak ada.', style: { margin: 0 } })),
+  ]);
+}
+
+function mismatchCard(rows) {
+  return el('.card', [
+    el('.card-head', [
+      el('h2', { text: `Periksa — kemungkinan salah catat (${rows.length})` }),
+      el('.spacer'),
+      badge('Petunjuk', 'amber'),
+    ]),
+    el('.alert.warn', [
+      icon('warn', 15),
+      el('div', { text: 'Dua pos terbuka berlawanan arah dengan nilai hampir sama biasanya berarti satu '
+        + 'peristiwa yang salah dicatat nilainya. Keduanya saling meniadakan sehingga jembatan tetap '
+        + 'tertutup — selisihnya tidak akan muncul di baris mana pun.' }),
+    ]),
+    el('.table-wrap', el('table.data', [
+      el('thead', el('tr', [
+        el('th', { text: 'Rekening koran' }), el('th.right', { text: 'Nilai bank' }),
+        el('th', { text: 'Jurnal' }), el('th.right', { text: 'Nilai buku' }), el('th.right', { text: 'Selisih' }),
+      ])),
+      el('tbody', rows.map((row) => el('tr', [
+        el('td', { text: fmt.date(row.statement_date) }),
+        el('td.right.num', { text: fmt.rupiah(row.statement_amount) }),
+        el('td.code', { text: `${row.journal_code} · ${fmt.date(row.journal_date)}` }),
+        el('td.right.num', { text: fmt.rupiah(row.journal_amount) }),
+        el('td.right.num', { text: fmt.rupiah(row.difference), style: { color: 'var(--danger)' } }),
+      ]))),
+    ])),
+  ]);
+}
+
+/* ------------------------------------------------------------------ inbox */
+
+function renderInbox(host, data, reload) {
+  const folder = data.folder || {};
+  const counts = data.counts || {};
+  const files = data.files || [];
+  const accounts = data.accounts || [];
+
+  host.appendChild(el('.stat-row', [
+    el('.stat.inbox-imported', [el('.label', { text: 'Diimpor' }), el('.value', { text: String(counts.imported || 0) })]),
+    el('.stat.inbox-failed', [
+      el('.label', { text: 'Gagal' }),
+      el('.value', { text: String(counts.failed || 0), style: counts.failed ? { color: 'var(--danger)' } : {} }),
+    ]),
+    el('.stat', [el('.label', { text: 'Salinan' }), el('.value', { text: String(counts.duplicate || 0) })]),
+    el('.stat', [el('.label', { text: 'Diabaikan' }), el('.value', { text: String(counts.ignored || 0) })]),
+    el('.stat.inbox-checked', [
+      el('.label', { text: 'Terakhir diperiksa' }),
+      // data-iso = stempel mentah dari core_settings, supaya harness membandingkan ubin dengan stempelnya.
+      el('.value.sm', { 'data-iso': data.last_checked_at || '', text: data.last_checked_at ? fmt.dateTime(data.last_checked_at) : 'belum pernah' }),
+      el('.delta', { text: 'stempel yang ditulis pemeriksaan, bukan jadwal' }),
+    ]),
+  ]));
+  host.appendChild(el('p.muted.inbox-counts-note', { style: { margin: '0 0 10px', fontSize: '12px' }, text: data.counts_note || '' }));
+
+  host.appendChild(el('.card.inbox-folder', [
+    el('.card-head', [
+      el('h2', { text: 'Folder terpantau' }),
+      el('.spacer'),
+      session.can('fin.create')
+        ? button('Periksa sekarang', {
+          size: 'sm', variant: 'primary', iconName: 'refresh',
+          title: 'Membaca folder sekarang, tanpa menunggu pemeriksaan tiap jam',
+          onClick: (event) => withBusy(event.currentTarget, async () => {
+            try {
+              const result = await api.postRaw('finance/bank-inbox/run');
+              toast(result.message || 'Folder diperiksa.');
+              reload();
+            } catch (error) {
+              toastError(error);
+            }
+          }),
+        })
+        : null,
+    ]),
+    /* Kalimat keadaan folder digambar kapan pun server mengirimkannya: belum ada, ATAU ada
+       tetapi tidak terbaca (V-close-1) — bukan hanya kasus pertama. */
+    folder.note
+      ? el('.alert.warn.inbox-folder-note', [icon('warn', 15), el('div', { text: folder.note })])
+      : null,
+    el('.card-body', { style: { display: 'grid', gap: '6px', fontSize: '12px' } }, [
+      el('.muted', { text: `Tata letak: ${folder.layout}. Jalurnya diatur administrator lewat ${folder.configured_via} di .env server.` }),
+      el('.muted', { text: 'Berkas diletakkan ke folder ini oleh administrator dari luar aplikasi (scp/rclone/salinan manual). '
+        + 'Aplikasi hanya membaca: berkas tidak dipindah, tidak diganti nama, tidak dihapus — pembersihan folder adalah pekerjaan pemilik.' }),
+      el('.muted', { text: 'Pemeriksaan berjalan tiap jam lewat penjadwal server, atau saat tombol Periksa sekarang ditekan. Hidup atau tidaknya '
+        + 'penjadwal tidak dilaporkan layar ini — lihat spanduk dasbor / kesehatan sistem. Setiap berkas lewat pemeriksaan yang sama dengan '
+        + 'tab Impor: tie-out, rantai periode/saldo, identitas berkas.' }),
+    ]),
+  ]));
+
+  host.appendChild(el('.card.inbox-accounts', [
+    el('.card-head', [el('h2', { text: 'Kesiapan per rekening' })]),
+    el('.table-wrap', el('table.data', [
+      el('thead', el('tr', [
+        el('th', { text: 'Sub-folder (kode rekening)' }), el('th', { text: 'Rekening' }), el('th', { text: 'Preset' }), el('th', { text: 'Yang bisa dibaca dari folder' }),
+      ])),
+      el('tbody', accounts.map((account) => el('tr', { 'data-code': account.code }, [
+        el('td', [
+          el('.cell-main.code', { text: `${account.code}/` }),
+          account.subfolder && account.subfolder.note
+            ? el('.cell-sub.inbox-subfolder-note', { style: { whiteSpace: 'normal', minWidth: '14rem', color: 'var(--danger)' }, text: account.subfolder.note })
+            : null,
+        ]),
+        el('td', { text: account.name }),
+        el('td', { text: account.preset.name || '—' }),
+        el('td', [
+          badge(account.preset.auto_csv ? 'CSV & MT940' : 'MT940 saja', account.preset.auto_csv ? 'green' : 'amber'),
+          el('.cell-sub.inbox-preset-note', { style: { whiteSpace: 'normal', minWidth: '14rem' }, text: account.preset.note }),
+        ]),
+      ]))),
+    ])),
+  ]));
+
+  host.appendChild(el('.card.inbox-files', [
+    el('.card-head', [el('h2', { text: `Berkas yang pernah diperiksa (${files.length})` })]),
+    files.length
+      ? el('.table-wrap', el('table.data', [
+        el('thead', el('tr', [
+          el('th', { text: 'Berkas' }), el('th', { text: 'Status' }), el('th', { text: 'Rekening koran' }), el('th', { text: 'Keterangan' }), el('th', { text: 'Diperiksa' }),
+        ])),
+        el('tbody', files.map((file) => el('tr', { 'data-status': file.status, 'data-path': file.relative_path }, [
+          el('td', [
+            el('.cell-main.mono', { style: { overflowWrap: 'anywhere' }, text: file.relative_path }),
+            el('.cell-sub', { text: file.bank_account ? `${file.bank_account.code} · ${file.bank_account.name}` : '' }),
+          ]),
+          el('td', badge(file.status_label, FILE_STATUS_TONE[file.status] || '')),
+          el('td', file.bank_statement
+            ? button(file.bank_statement.code, {
+              size: 'sm', variant: 'ghost',
+              onClick: () => {
+                state.tab = 'statements';
+                if (file.bank_account) state.bankAccountId = file.bank_account.id;
+                state.statementId = file.bank_statement.id;
+                reload({ repaintTabs: true });
+              },
+            })
+            : el('span.muted', { text: '—' })),
+          el('td', { style: { whiteSpace: 'normal', minWidth: '16rem', overflowWrap: 'anywhere' }, text: file.error || '' }),
+          el('td', { text: file.checked_at ? fmt.dateTime(file.checked_at) : '—' }),
+        ]))),
+      ]))
+      : el('.card-body', el('p.muted', { style: { margin: 0 }, text: folder.exists && folder.readable !== false
+        ? 'Belum ada berkas yang diperiksa. Letakkan berkas di sub-folder kode rekening, lalu tunggu pemeriksaan tiap jam atau tekan Periksa sekarang.'
+        : 'Belum ada berkas yang diperiksa.' })),
+  ]));
+}
+
+/* ------------------------------------------------------------------- shell */
+
+export async function renderBankRecon(host) {
+  clear(host);
+
+  if (!session.can('fin.view')) {
+    host.appendChild(el('.alert.error', 'Anda tidak memiliki akses ke rekonsiliasi bank.'));
+    return;
+  }
+
+  host.appendChild(el('.page-head', [
+    el('div', [
+      el('h1', { text: 'Rekonsiliasi Bank' }),
+      el('.desc', { text: 'Impor rekening koran, cocokkan mutasinya dengan pembayaran dan jurnal yang '
+        + 'sudah diposting, lalu baca selisihnya. Layar ini tidak pernah membuat jurnal.' }),
+    ]),
+  ]));
+
+  const tabs = el('.tabs');
+  const controls = el('.filters', {
+    style: { border: '1px solid var(--border)', borderRadius: 'var(--radius)', marginBottom: '16px' },
+  });
+  const body = el('div');
+  host.append(tabs, controls, body);
+
+  let accounts = [];
+
+  try {
+    accounts = rows(await api.get('finance/bank-accounts', { per_page: 100 }));
+  } catch (error) {
+    host.appendChild(errorState(error, () => renderBankRecon(host)));
+    return;
+  }
+
+  if (!accounts.length) {
+    body.appendChild(el('.alert.warn', 'Belum ada rekening bank. Buat dulu di Keuangan › Rekening Bank.'));
+    return;
+  }
+
+  // Tautan dalam: tab dan (untuk rekening koran) rekening + rekening korannya.
+  const query = hashQuery();
+  if (TABS.some((tab) => tab.key === query.get('tab'))) state.tab = query.get('tab');
+  if (query.get('account')) state.bankAccountId = Number(query.get('account'));
+  if (query.get('statement')) state.statementId = Number(query.get('statement'));
+
+  if (!accounts.some((a) => a.id === state.bankAccountId)) state.bankAccountId = accounts[0].id;
+
+  const accountSelect = el('select.filter-w', {
+    onchange: (event) => { state.bankAccountId = Number(event.target.value); state.statementId = null; load(); },
+  });
+  accounts.forEach((a) => accountSelect.appendChild(el('option', { value: a.id, text: `${a.name} — ${a.account_no}` })));
+  accountSelect.value = String(state.bankAccountId);
+
+  const asOfInput = el('input.filter-w', {
+    type: 'date', value: state.asOf, 'aria-label': 'Sampai tanggal',
+    onchange: (event) => { state.asOf = event.target.value; load(); },
+  });
+
+  controls.append(accountSelect, asOfInput, el('.spacer'), button('Muat ulang', {
+    size: 'sm', variant: 'ghost', iconName: 'refresh', onClick: () => load(),
+  }));
+
+  function paintTabs() {
+    clear(tabs);
+    TABS.forEach((tab) => tabs.appendChild(el(`button${tab.key === state.tab ? '.active' : ''}`, {
+      text: tab.label,
+      onclick: () => { if (state.tab === tab.key) return; state.tab = tab.key; paintTabs(); load(); },
+    })));
+  }
+
+  async function load({ repaintTabs = false } = {}) {
+    if (repaintTabs) { accountSelect.value = String(state.bankAccountId); paintTabs(); }
+    // Tab aktif ditulis kembali ke hash (tanpa hashchange): tautan notifikasi ke
+    // ?tab=inbox sesudah berpindah tab tetap berbeda dari hash sekarang, dan muat
+    // ulang halaman kembali ke tab ini — bukan ke tab dari query lama.
+    replacePath(`bank-recon?tab=${state.tab}${state.tab === 'statements' || state.tab === 'reconcile'
+      ? `&account=${state.bankAccountId}${state.tab === 'statements' && state.statementId ? `&statement=${state.statementId}` : ''}` : ''}`);
+    clear(body);
+    // The overview covers every account, so the account picker would mislead;
+    // the as-of date still applies, so the row is kept and only the picker hides.
+    controls.style.display = state.tab === 'import' || state.tab === 'inbox' ? 'none' : '';
+    accountSelect.style.display = state.tab === 'overview' ? 'none' : '';
+    body.appendChild(skeletonTable(6, 5));
+
+    try {
+      if (state.tab === 'import') {
+        clear(body);
+        renderImport(body, accounts, () => { state.tab = 'statements'; paintTabs(); load(); });
+        return;
+      }
+
+      if (state.tab === 'inbox') {
+        const inbox = await api.get('finance/bank-inbox');
+        clear(body);
+        renderInbox(body, inbox, load);
+        return;
+      }
+
+      if (state.tab === 'overview') {
+        const overview = await api.get('finance/reports/bank-reconciliation-overview', {
+          as_of: state.asOf || undefined,
+        });
+        clear(body);
+        renderOverview(body, overview, (id) => {
+          state.bankAccountId = id;
+          state.tab = 'reconcile';
+          accountSelect.value = String(id);
+          paintTabs();
+          load();
+        });
+        return;
+      }
+
+      if (state.tab === 'statements') {
+        const statements = rows(await api.get('finance/bank-statements', {
+          bank_account_id: state.bankAccountId, per_page: 100,
+        }));
+        const active = statements.find((s) => s.id === state.statementId) || statements[0];
+        let detail = null;
+        let suggestions = {};
+
+        if (active) {
+          [detail, suggestions] = await Promise.all([
+            api.get(`finance/bank-statements/${active.id}`),
+            api.get(`finance/bank-statements/${active.id}/suggestions`),
+          ]);
+        }
+
+        clear(body);
+        renderStatements(
+          body,
+          statements.map((s) => (detail && s.id === detail.id ? { ...s, ...detail } : s)),
+          suggestions || {},
+          load,
+        );
+        return;
+      }
+
+      const report = await api.get('finance/reports/bank-reconciliation', {
+        bank_account_id: state.bankAccountId,
+        as_of: state.asOf || undefined,
+      });
+      clear(body);
+      renderReconciliation(body, report);
+    } catch (error) {
+      clear(body).appendChild(errorState(error, load));
+    }
+  }
+
+  paintTabs();
+  await load();
+}
